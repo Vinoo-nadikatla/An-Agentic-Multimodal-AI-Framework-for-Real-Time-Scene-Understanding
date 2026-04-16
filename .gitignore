@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+*.mp3
+*.jpg
+*.pt
+.gradio/
+uv.lock
+.env

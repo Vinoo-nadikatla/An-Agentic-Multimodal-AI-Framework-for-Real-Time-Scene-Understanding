@@ -1,0 +1,20 @@
+[project]
+name = "agentic-multimodal-genai-chatbot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "elevenlabs>=2.23.0",
+    "gradio>=5.49.1",
+    "groq>=0.35.0",
+    "gtts>=2.5.4",
+    "langchain-google-genai>=4.0.0",
+    "langgraph>=0.6.10",
+    "opencv-python>=4.12.0.88",
+    "pyaudio>=0.2.14",
+    "pydub>=0.25.1",
+    "pygame>=2.6.1",
+    "python-dotenv>=1.1.1",
+    "speechrecognition>=3.14.3",
+]

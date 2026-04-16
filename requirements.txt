@@ -1,0 +1,11 @@
+langgraph
+langchain-google-genai
+groq
+opencv-python
+speechrecognition
+pydub
+elevenlabs
+gtts
+transformers
+gradio
+pyaudio
