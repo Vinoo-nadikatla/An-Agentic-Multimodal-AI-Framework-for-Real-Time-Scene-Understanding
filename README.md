@@ -1,6 +1,6 @@
 ---
 title: VN AI
-emoji: ??
+emoji: U+1F441
 colorFrom: indigo
 colorTo: blue
 sdk: docker
