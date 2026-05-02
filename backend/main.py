@@ -90,7 +90,22 @@ async def transcribe(file: UploadFile):
         return {"text": text}
     finally:
         tmp_path.unlink(missing_ok=True)
-
+@app.post("/api/tts")
+async def text_to_speech(request: dict):
+    text = request.get("text", "")
+    lang = request.get("lang", "en")
+    try:
+        from gtts import gTTS
+        import io
+        tts = gTTS(text=text, lang=lang, slow=False)
+        buf = io.BytesIO()
+        tts.write_to_fp(buf)
+        buf.seek(0)
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(buf, media_type="audio/mpeg")
+    except Exception as e:
+        return {"error": str(e)}
+    
 @app.websocket("/ws/{session_id}")
 async def websocket_chat(websocket: WebSocket, session_id: str):
     await websocket.accept()

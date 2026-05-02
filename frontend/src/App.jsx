@@ -15,11 +15,33 @@ const SUGGESTIONS = [
 function speak(text) {
   if (!text || !window.speechSynthesis) return;
   window.speechSynthesis.cancel();
-  const words = text.replace(/[*_#`]/g, "");
-  const utt = new SpeechSynthesisUtterance(words);
-  utt.rate = 1.05;
+
+  const clean = text.replace(/[*_#`]/g, "");
+  const utt = new SpeechSynthesisUtterance(clean);
+  utt.rate = 0.95;
   utt.pitch = 1;
   utt.volume = 1;
+
+  // Detect language and set correct voice
+  const teluguPattern = /[\u0C00-\u0C7F]/;
+  const hindiPattern  = /[\u0900-\u097F]/;
+  const arabicPattern = /[\u0600-\u06FF]/;
+
+  if (teluguPattern.test(clean)) {
+    utt.lang = "te-IN";
+  } else if (hindiPattern.test(clean)) {
+    utt.lang = "hi-IN";
+  } else if (arabicPattern.test(clean)) {
+    utt.lang = "ar-SA";
+  } else {
+    utt.lang = "en-US";
+  }
+
+  // Find matching voice if available
+  const voices = window.speechSynthesis.getVoices();
+  const match = voices.find(v => v.lang === utt.lang);
+  if (match) utt.voice = match;
+
   window.speechSynthesis.speak(utt);
 }
 
