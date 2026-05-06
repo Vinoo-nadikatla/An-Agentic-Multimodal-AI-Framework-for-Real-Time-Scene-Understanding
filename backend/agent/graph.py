@@ -60,9 +60,10 @@ def build_graph() -> StateGraph:
     tools = get_tools()
 
     llm = ChatGroq(
-        model="meta-llama/llama-4-scout-17b-16e-instruct",
+        model="llama-3.3-70b-versatile",
         api_key=os.environ["GROQ_API_KEY"],
         streaming=True,
+        temperature=0,
     ).bind_tools(tools)
 
     graph = StateGraph(AgentState)

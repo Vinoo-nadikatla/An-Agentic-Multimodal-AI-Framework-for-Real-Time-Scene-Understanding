@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, base64, logging, os, uuid
+import asyncio, base64, logging, os, tempfile, uuid
 from pathlib import Path
 import cv2, uvicorn
 from dotenv import load_dotenv
@@ -82,7 +82,7 @@ async def receive_frame(payload: FramePayload):
 async def transcribe(file: UploadFile):
     if not file.filename:
         raise HTTPException(400, "No file provided")
-    tmp_path = Path(f"C:/Windows/Temp/{uuid.uuid4()}.webm")
+    tmp_path = Path(tempfile.gettempdir()) / f"{uuid.uuid4()}.webm"
     try:
         tmp_path.write_bytes(await file.read())
         from services.speech_to_text import transcribe_with_groq

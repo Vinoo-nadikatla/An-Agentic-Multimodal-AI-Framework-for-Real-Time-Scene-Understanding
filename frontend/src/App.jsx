@@ -16,33 +16,37 @@ function speak(text) {
   if (!text || !window.speechSynthesis) return;
   window.speechSynthesis.cancel();
 
-  const clean = text.replace(/[*_#`]/g, "");
+  const clean = text.replace(/[*_#`]/g, "").trim();
+  if (!clean) return;
+
   const utt = new SpeechSynthesisUtterance(clean);
-  utt.rate = 0.95;
+  utt.rate = 0.92;
   utt.pitch = 1;
   utt.volume = 1;
 
-  // Detect language and set correct voice
-  const teluguPattern = /[\u0C00-\u0C7F]/;
-  const hindiPattern  = /[\u0900-\u097F]/;
-  const arabicPattern = /[\u0600-\u06FF]/;
+  const hasTelugu = /[\u0C00-\u0C7F]/.test(clean);
+  const hasHindi  = /[\u0900-\u097F]/.test(clean);
+  const hasTamil  = /[\u0B80-\u0BFF]/.test(clean);
 
-  if (teluguPattern.test(clean)) {
-    utt.lang = "te-IN";
-  } else if (hindiPattern.test(clean)) {
-    utt.lang = "hi-IN";
-  } else if (arabicPattern.test(clean)) {
-    utt.lang = "ar-SA";
-  } else {
-    utt.lang = "en-US";
-  }
+  if (hasTelugu)      utt.lang = "te-IN";
+  else if (hasHindi)  utt.lang = "hi-IN";
+  else if (hasTamil)  utt.lang = "ta-IN";
+  else                utt.lang = "en-US";
 
-  // Find matching voice if available
-  const voices = window.speechSynthesis.getVoices();
-  const match = voices.find(v => v.lang === utt.lang);
-  if (match) utt.voice = match;
+  const trySpeak = (attempts) => {
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length === 0 && attempts > 0) {
+      setTimeout(() => trySpeak(attempts - 1), 250);
+      return;
+    }
+    const exact   = voices.find(v => v.lang === utt.lang);
+    const partial = voices.find(v => v.lang.startsWith(utt.lang.split("-")[0]));
+    if (exact)        utt.voice = exact;
+    else if (partial) utt.voice = partial;
+    window.speechSynthesis.speak(utt);
+  };
 
-  window.speechSynthesis.speak(utt);
+  trySpeak(6);
 }
 
 export default function App() {
@@ -99,6 +103,51 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
+  // Send browser camera frames to backend for AI vision
+  useEffect(() => {
+    let alive = true;
+    let stream = null;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+
+    const startCapture = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false
+        });
+        const video = document.createElement("video");
+        video.srcObject = stream;
+        await video.play();
+
+        const sendFrame = async () => {
+          if (!alive) return;
+          canvas.width = 512;
+          canvas.height = 512;
+          ctx.drawImage(video, 0, 0, 512, 512);
+          const b64 = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+          try {
+            await fetch(`${API_BASE}/api/stream-frame`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ session_id: SESSION_ID, frame_b64: b64 })
+            });
+          } catch (_) {}
+          if (alive) setTimeout(sendFrame, 2000);
+        };
+        sendFrame();
+      } catch (e) {
+        console.log("Browser camera not available:", e.message);
+      }
+    };
+
+    startCapture();
+    return () => {
+      alive = false;
+      stream?.getTracks().forEach(t => t.stop());
+    };
+  }, []);
+
   // auto scroll
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streaming]);
 
@@ -114,7 +163,7 @@ export default function App() {
             if (d.frame) setCamStream(d.frame);
           }
         } catch (_) {}
-        await new Promise(res => setTimeout(res, 150));
+        await new Promise(res => setTimeout(res, 500));
       }
     };
     loop();

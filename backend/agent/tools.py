@@ -1,137 +1,105 @@
 """
 agent/tools.py
---------------
-LangChain tools for the vision agent.
-
-Only ONE tool is exposed: analyze_image_with_query.
-
+Vision tool using Google Gemini 1.5 Flash.
 Frame source priority:
-  1. Browser-streamed frame injected via _current_frame_b64 context-var
-     (set by tool_executor_node from state["current_frame_b64"])
-  2. Server-side camera_stream (if running — local/Pi deployments)
-
-This means the same tool works for both deployment modes transparently.
+  1. Browser-streamed frame via _current_frame_b64 context-var
+  2. Server-side OpenCV camera_stream
 """
-
 from __future__ import annotations
-
 import base64
 import contextvars
 import logging
 import os
-
 import cv2
 import numpy as np
-from groq import Groq
 from langchain_core.tools import BaseTool, tool
 
 logger = logging.getLogger(__name__)
 
-# Context-var set by tool_executor_node before each tool call
 _current_frame_b64: contextvars.ContextVar[str | None] = \
     contextvars.ContextVar("_current_frame_b64", default=None)
 
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 def _get_frame_b64(size: int = 512) -> str:
-    """
-    Return a base64-encoded JPEG frame from the best available source.
-    Raises RuntimeError if no frame is available.
-    """
-    # Priority 1: browser-streamed frame (already base64-encoded JPEG)
     frame_b64 = _current_frame_b64.get()
     if frame_b64:
-        # Decode → resize → re-encode at target size for consistency
         try:
-            img_bytes = base64.b64decode(frame_b64)
-            arr = np.frombuffer(img_bytes, dtype=np.uint8)
+            arr = np.frombuffer(base64.b64decode(frame_b64), dtype=np.uint8)
             frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if frame is not None:
                 frame = cv2.resize(frame, (size, size))
                 _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                return base64.b64encode(buf).decode("utf-8")
+                return base64.b64encode(buf).decode()
         except Exception as e:
-            logger.warning("Failed to decode browser frame: %s", e)
+            logger.warning("Browser frame decode failed: %s", e)
 
-    # Priority 2: server-side OpenCV camera
     try:
         from services.camera_stream import camera_stream
         frame = camera_stream.get_frame()
         if frame is not None:
             frame = cv2.resize(frame, (size, size))
             _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            return base64.b64encode(buf).decode("utf-8")
+            return base64.b64encode(buf).decode()
     except Exception:
-        pass  # Camera not available on this deployment
+        pass
 
     raise RuntimeError(
         "No camera frame available. "
-        "Ensure the browser camera is active or the server-side camera is connected."
+        "Make sure your browser camera is active or the server camera is connected."
     )
 
-
-# ---------------------------------------------------------------------------
-# Tool definition
-# ---------------------------------------------------------------------------
 
 @tool
 def analyze_image_with_query(query: str) -> str:
     """
-    Use this tool ONLY when the user's question requires seeing the live camera feed.
+    Captures a live frame from the camera and analyzes it using AI vision.
 
-    Examples: object identification, counting people, describing surroundings,
-    reading visible text, colour questions, motion detection confirmation.
+    Call this tool when the user wants to know anything about:
+    - What is physically present in their environment
+    - Their own appearance or what they are wearing
+    - Objects, colors, text, or people visible through the camera
+    - What the room or background looks like
+    - Motion, activity, or anything happening around them
 
-    Do NOT use for general knowledge, math, history, or follow-up questions
-    about a scene already described in this conversation.
+    Do not call this tool for:
+    - General knowledge questions
+    - Math, history, science, definitions
+    - Questions about the past or hypothetical situations
+    - Follow-up questions about something already described this conversation
+
+    This tool makes one API call per invocation. Call it only once per query.
 
     Args:
-        query: The specific visual question to answer about the current camera view.
-
+        query: The specific visual question to answer.
     Returns:
-        A natural-language answer based on what the camera sees.
+        Natural language answer based on what the camera currently sees.
     """
-    logger.info("analyze_image_with_query: %s", query)
+    logger.info("Gemini vision called: %s", query)
 
-    api_key = os.environ.get("GROQ_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        return "Error: GROQ_API_KEY not configured."
+        return "Error: GEMINI_API_KEY not set. Please add it to your .env file."
 
     try:
         img_b64 = _get_frame_b64()
     except RuntimeError as e:
         return str(e)
 
-    client = Groq(api_key=api_key)
     try:
-        resp = client.chat.completions.create(
-            model=VISION_MODEL,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": query},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:image/jpeg;base64,{img_b64}"
-                    }},
-                ],
-            }],
-            temperature=0,
-            max_tokens=512,
-        )
-        return resp.choices[0].message.content
+        import google.generativeai as genai
+        import PIL.Image
+        import io
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        img = PIL.Image.open(io.BytesIO(base64.b64decode(img_b64)))
+        response = model.generate_content([query, img])
+        return response.text
+
     except Exception as e:
-        logger.error("Vision API error: %s", e)
-        raise RuntimeError(f"Vision analysis failed: {e}") from e
+        logger.error("Gemini vision error: %s", e)
+        return f"Vision analysis failed: {e}"
 
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 
 def get_tools() -> list[BaseTool]:
     return [analyze_image_with_query]
