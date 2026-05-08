@@ -102,7 +102,7 @@ def transcribe_with_groq(audio_filepath: str) -> str:
             transcription = client.audio.transcriptions.create(
                 model=STT_MODEL,
                 file=audio_file,
-                language="en",
+               
             )
         logger.info("Transcription: %s", transcription.text)
         return transcription.text

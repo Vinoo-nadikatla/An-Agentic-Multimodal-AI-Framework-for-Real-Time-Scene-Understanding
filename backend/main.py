@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from fastapi import Request
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -91,12 +92,24 @@ async def transcribe(file: UploadFile):
     finally:
         tmp_path.unlink(missing_ok=True)
 @app.post("/api/tts")
-async def text_to_speech(request: dict):
-    text = request.get("text", "")
-    lang = request.get("lang", "en")
+async def text_to_speech_api(request: Request):
+    data = await request.json()
+    text = data.get("text", "")
+    if not text:
+        return JSONResponse({"error": "No text"}, status_code=400)
     try:
         from gtts import gTTS
         import io
+        # Detect language
+        import re
+        if re.search(r'[\u0C00-\u0C7F]', text):
+            lang = "te"
+        elif re.search(r'[\u0900-\u097F]', text):
+            lang = "hi"
+        elif re.search(r'[\u0B80-\u0BFF]', text):
+            lang = "ta"
+        else:
+            lang = "en"
         tts = gTTS(text=text, lang=lang, slow=False)
         buf = io.BytesIO()
         tts.write_to_fp(buf)
@@ -104,7 +117,7 @@ async def text_to_speech(request: dict):
         from fastapi.responses import StreamingResponse
         return StreamingResponse(buf, media_type="audio/mpeg")
     except Exception as e:
-        return {"error": str(e)}
+        return JSONResponse({"error": str(e)}, status_code=500)
     
 @app.websocket("/ws/{session_id}")
 async def websocket_chat(websocket: WebSocket, session_id: str):
@@ -140,9 +153,25 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             current_frame = _session_frames.get(session_id)
             tok = tool_module._current_frame_b64.set(current_frame)
             try:
+                from agent.intent_router import classify as classify_intent
+                intent = classify_intent(user_text)
+                logger.info("Intent classified: %s", intent)
+
+                # Trim history to last 6 messages, but never start on a ToolMessage
+                # or orphaned AIMessage(tool_calls) — scan back to find a safe HumanMessage boundary
+                msgs = session["messages"]
+                if len(msgs) > 6:
+                    trimmed = msgs[-6:]
+                    # Walk forward until we start on a HumanMessage
+                    while trimmed and not isinstance(trimmed[0], HumanMessage):
+                        trimmed = trimmed[1:]
+                    session["messages"] = trimmed if trimmed else msgs[-2:]
+
                 state_input = {
                     "messages": session["messages"] + [HumanMessage(content=user_text)],
                     "current_frame_b64": current_frame,
+                    "intent": intent,
+                    "tool_call_count": 0,
                 }
                 result = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: graph.invoke(state_input)

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(ls \"c:\\\\Agentic Multimodal GenAI Chatbot\" -Force | Where-Object { $_.Length -gt 1MB } | Select-Object Name, @{l='SizeMB';e={[math]::Round\\($_.Length/1MB,2\\)}} | Format-Table -AutoSize)",
+      "Bash(git rm *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(Remove-Item .git\\\\filter-repo\\\\already_ran -Force)",
+      "Bash(git filter-repo *)"
+    ]
+  }
+}

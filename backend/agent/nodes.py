@@ -1,40 +1,54 @@
 from __future__ import annotations
 import logging
+import re
 from typing import Sequence
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
-# SYSTEM_PROMPT = """You are VN AI, an intelligent assistant with access to a live camera feed.
-
-# You have one tool: analyze_image_with_query(query)
-
-# Use this tool whenever the user is asking about something that requires seeing - their environment, appearance, objects nearby, people, motion, colors, or anything physical around them.
-
-# Do NOT use the tool for general knowledge, math, history, coding, definitions, or anything that does not require visual context.
-
-# When you are unsure whether to use the tool, ask yourself: "Would seeing the camera help answer this?" If yes, use it.
-
-# Always respond naturally and conversationally. Never mention tool names to the user. Never say you cannot see - you have a camera and can use it anytime."""
 SYSTEM_PROMPT = """You are VN AI, a friendly multimodal assistant with a live camera.
 
-Respond in the same language the user speaks. Be natural and conversational —
-talk like a friend, not a textbook.
+You have a camera tool. Use it when the user asks about anything visual — what you see, surroundings, appearance, objects, colors, people, movement.
 
-You have a camera tool available. Use it naturally when seeing the environment
-would genuinely help answer the question — just like a person would look around
-when asked about their surroundings."""
+For general knowledge questions, answer directly without the camera.
+
+Reply in the same language the user is using. Be natural and conversational."""
+
 
 def conversation_node(state: dict, llm) -> dict:
-    messages: list[BaseMessage] = list(state["messages"])
-    full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+    messages = list(state["messages"])
+    intent = state.get("intent", "general")
+
+    # Scene queries — inject real data and answer without tools
+    if intent == "scene":
+        try:
+            from services.scene_memory import get_scene
+            scene = get_scene()
+            people = scene.get("people", 0)
+            motion = scene.get("motion", False)
+            scene_msg = SystemMessage(content=(
+                f"Current scene: {people} {'person' if people == 1 else 'people'} detected, "
+                f"motion {'detected' if motion else 'not detected'}. "
+                f"Answer directly from this. Do not use any tool."
+            ))
+            full_messages = [SystemMessage(content=SYSTEM_PROMPT), scene_msg] + messages
+        except Exception:
+            full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+    else:
+        full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+
     try:
         ai_msg = llm.invoke(full_messages)
+        if isinstance(ai_msg.content, str):
+            # Clean leaked tool syntax and action narration
+            ai_msg.content = re.sub(r'<function=\w+>.*?</function>', '', ai_msg.content, flags=re.DOTALL)
+            ai_msg.content = re.sub(r'\*[^*]+\*', '', ai_msg.content)
+            ai_msg.content = ai_msg.content.strip()
         return {"messages": [ai_msg]}
     except Exception as e:
         logger.error("LLM error: %s", e)
-        return {"messages": [AIMessage(content="Sorry, I had trouble with that. Please try again.")]}
+        return {"messages": [AIMessage(content="Sorry, something went wrong. Please try again.")]}
 
 
 def tool_executor_node(state: dict, tools: Sequence[BaseTool]) -> dict:
@@ -53,7 +67,7 @@ def tool_executor_node(state: dict, tools: Sequence[BaseTool]) -> dict:
                 output = tool.invoke(tc["args"]) if tool else f"Unknown tool: {tc['name']}"
             except Exception as e:
                 logger.error("Tool %s failed: %s", tc["name"], e)
-                output = f"Tool error: {e}"
+                output = "I could not complete that visual analysis. Please try again."
             results.append(ToolMessage(content=str(output), tool_call_id=tc["id"]))
     finally:
         tool_module._current_frame_b64.reset(tok)

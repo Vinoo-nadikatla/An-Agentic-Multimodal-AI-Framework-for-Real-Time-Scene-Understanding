@@ -12,41 +12,47 @@ const SUGGESTIONS = [
   "Is there any movement?",
 ];
 
-function speak(text) {
-  if (!text || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
+async function speakWithGTTS(text, apiBase, setCurrentAudio) {
+  try {
+    const resp = await fetch(`${apiBase}/api/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    if (!resp.ok) throw new Error("TTS failed");
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    setCurrentAudio(audio);
+    audio.onended = () => { URL.revokeObjectURL(url); setCurrentAudio(null); };
+    await audio.play();
+  } catch (e) {
+    console.error("gTTS failed:", e);
+  }
+}
 
+function speak(text, apiBase = "", setCurrentAudio = () => {}) {
+  if (!text) return;
   const clean = text.replace(/[*_#`]/g, "").trim();
   if (!clean) return;
-
-  const utt = new SpeechSynthesisUtterance(clean);
-  utt.rate = 0.92;
-  utt.pitch = 1;
-  utt.volume = 1;
 
   const hasTelugu = /[\u0C00-\u0C7F]/.test(clean);
   const hasHindi  = /[\u0900-\u097F]/.test(clean);
   const hasTamil  = /[\u0B80-\u0BFF]/.test(clean);
+  const isNonEnglish = hasTelugu || hasHindi || hasTamil;
 
-  if (hasTelugu)      utt.lang = "te-IN";
-  else if (hasHindi)  utt.lang = "hi-IN";
-  else if (hasTamil)  utt.lang = "ta-IN";
-  else                utt.lang = "en-US";
+  if (isNonEnglish) {
+    speakWithGTTS(clean, apiBase, setCurrentAudio);
+    return;
+  }
 
-  const trySpeak = (attempts) => {
-    const voices = window.speechSynthesis.getVoices();
-    if (voices.length === 0 && attempts > 0) {
-      setTimeout(() => trySpeak(attempts - 1), 250);
-      return;
-    }
-    const exact   = voices.find(v => v.lang === utt.lang);
-    const partial = voices.find(v => v.lang.startsWith(utt.lang.split("-")[0]));
-    if (exact)        utt.voice = exact;
-    else if (partial) utt.voice = partial;
-    window.speechSynthesis.speak(utt);
-  };
-
-  trySpeak(6);
+  // English \u2014 use browser TTS
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(clean);
+  utt.rate = 0.92;
+  utt.lang = "en-US";
+  window.speechSynthesis.speak(utt);
 }
 
 export default function App() {
@@ -59,6 +65,7 @@ export default function App() {
   const [processing, setProcessing] = useState(false);
   const [ttsOn, setTtsOn]           = useState(true);
   const [camStream, setCamStream]   = useState(null);
+  const [currentAudio, setCurrentAudio] = useState(null);
 
   const bottomRef   = useRef(null);
   const inputRef    = useRef(null);
@@ -76,11 +83,8 @@ export default function App() {
       setThinking(false);
       setStreaming((prev) => {
         if (prev.trim()) {
-          setMessages((m) => {
-            const msg = { role: "assistant", text: prev, time: now() };
-            if (ttsOn) speak(prev);
-            return [...m, msg];
-          });
+          setMessages((m) => [...m, { role: "assistant", text: prev, time: now() }]);
+          if (ttsOn) speak(prev, API_BASE, setCurrentAudio);
         }
         return "";
       });
@@ -173,11 +177,14 @@ export default function App() {
   const send = (text) => {
     const t = text.trim();
     if (!t || !connected || isThinking) return;
+    // Stop any ongoing speech immediately
+    window.speechSynthesis?.cancel();
+    setCurrentAudio(prev => { prev?.pause(); return null; });
     setMessages((m) => [...m, { role: "user", text: t, time: now() }]);
     sendMessage({ type: "message", text: t });
     setDraft("");
     inputRef.current?.focus();
-  };
+};
 
   const startRec = async () => {
     chunksRef.current = [];
@@ -321,7 +328,7 @@ export default function App() {
                 <div className="msg-meta">
                   <span className="msg-time">{msg.time}</span>
                   {msg.role === "assistant" && (
-                    <button className="replay-btn" onClick={() => speak(msg.text)} title="Replay audio">🔊</button>
+                    <button className="replay-btn" onClick={() => speak(msg.text, API_BASE, setCurrentAudio)} title="Replay audio">🔊</button>
                   )}
                 </div>
               </div>
