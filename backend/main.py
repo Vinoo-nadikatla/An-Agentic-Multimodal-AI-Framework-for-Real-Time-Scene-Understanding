@@ -79,6 +79,17 @@ async def receive_frame(payload: FramePayload):
     _session_frames[payload.session_id] = payload.frame_b64
     return {"ok": True}
 
+@app.get("/api/ppe-status")
+async def ppe_status():
+    from services.ppe_detector import get_ppe_status
+    return get_ppe_status()
+
+@app.get("/api/ppe-feed")
+async def ppe_feed():
+    from services.ppe_detector import get_annotated_frame
+    frame = get_annotated_frame()
+    return {"frame": frame}
+
 @app.post("/api/transcribe")
 async def transcribe(file: UploadFile):
     if not file.filename:

@@ -21,14 +21,31 @@ _running = False
 def _loop() -> None:
     from services.motion_detector import detect_motion
     from services.object_detector import detect_people
-    from services.scene_memory import update_scene
+    from services.scene_memory import update_scene, get_scene
+    from services.activity_log import add_entry
+    from services.ppe_detector import ppe_detector
+    from services.camera_stream import camera_stream
 
     logger.info("Perception loop started.")
+    prev_people: int | None = None
+    prev_motion: bool | None = None
+
     while _running:
         try:
             motion = detect_motion()
             people = detect_people()
             update_scene(people=people, motion=motion)
+
+            # Run PPE detection on current frame
+            frame = camera_stream.get_frame()
+            if frame is not None:
+                ppe_detector.detect(frame)
+
+            # Log only when state changes — not every iteration
+            if people != prev_people or motion != prev_motion:
+                add_entry(people=people, motion=motion)
+                prev_people = people
+                prev_motion = motion
         except Exception as e:
             logger.error("Perception loop error: %s", e)
         time.sleep(0.5)  # 2 Hz — sufficient for occupancy detection

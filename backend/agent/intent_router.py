@@ -11,8 +11,11 @@ logger = logging.getLogger(__name__)
 
 _SCENE_RE = re.compile(
     r"how.many|count.*people|number.of.people|kitne.log|entha.mandi|"
-    r"is.there.*anyone|are.there.*people|anyone.in.the.room|"
+    r"is.there.*anyone|are.there.*people|are.there.*worker|anyone.in.the.room|"
+    r"any.workers|workers.present|workers.in.the|how.many.workers|"
     r"motion|movement|moving|suspicious|halchal|"
+    r"what.happened|activity.log|last.hour|last.30|"
+    r"timeline|history|report|summary.of|"
     r"ఎంత.మంది|ఎవరైనా|కదలిక",
     re.IGNORECASE,
 )
@@ -28,16 +31,13 @@ _OCR_RE = re.compile(
 _VISION_RE = re.compile(
     r"what.do.you.see|describe|surroundings|background|"
     r"what.am.i|what.are.you|what.is.in.the|who.is.in|"
-    r"am.i.wearing|do.i.have|do.i.look|i.*look.like|"
-    r"what.*wearing|what.*color|what.*colour|"
-    r"shirt|tshirt|t-shirt|dress|outfit|clothes|"
-    r"suits|look.good|look.nice|fits.her|fits.him|"
-    r"women.*wearing|man.*wearing|person.*wearing|"
-    r"my.appearance|my.outfit|my.expression|"
-    r"color.of|colour.of|holding|doing|"
-    r"see.right.now|look.right.now|"
-    r"చూడు|వివరించు|ఏమి.కనిపిస్తోంది|నా.వెనక|"
-    r"kya.dikh|batao|rang|dekho",
+    r"wearing|holding|doing|color|colour|"
+    r"helmet|hard.hat|vest|gloves|mask|"
+    r"wearing.*ppe|check.*ppe|ppe.*on|ppe.*violation|ppe.*complian|"
+    r"safety.violation|safety.check|unsafe|danger|hazard|violation|"
+    r"near.machine|near.equipment|"
+    r"చూడు|వివరించు|ఏమి.కనిపిస్తోంది|"
+    r"kya.dikh|batao|dekho",
     re.IGNORECASE,
 )
 

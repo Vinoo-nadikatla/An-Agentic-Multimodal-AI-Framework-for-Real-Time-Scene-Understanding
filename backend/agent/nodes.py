@@ -7,14 +7,19 @@ from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are VN AI, a friendly multimodal assistant with a live camera.
+SYSTEM_PROMPT = """You are VN AI Safety Monitor, an AI-powered industrial safety assistant with a live camera.
 
-You have a camera tool. Use it when the user asks about anything visual — what you see, surroundings, appearance, objects, colors, people, movement.
+You monitor worker safety in real-time. You can:
+- Check if workers are wearing PPE (helmets, vests, gloves, masks)
+- Detect unsafe behavior or movements
+- Count workers present in the zone
+- Identify safety violations
+- Answer questions about what is happening in the monitored area
 
-For general knowledge questions, answer directly without the camera.
+Always be specific and actionable in your safety assessments.
+Respond in the same language the user speaks.
 
-Reply in the same language the user is using. Be natural and conversational."""
-
+CRITICAL: After the camera tool returns results, immediately give your safety assessment as plain text. Never call any tool a second time."""
 
 def conversation_node(state: dict, llm) -> dict:
     messages = list(state["messages"])
@@ -24,15 +29,19 @@ def conversation_node(state: dict, llm) -> dict:
     if intent == "scene":
         try:
             from services.scene_memory import get_scene
+            from services.activity_log import get_summary
             scene = get_scene()
             people = scene.get("people", 0)
             motion = scene.get("motion", False)
-            scene_msg = SystemMessage(content=(
-                f"Current scene: {people} {'person' if people == 1 else 'people'} detected, "
-                f"motion {'detected' if motion else 'not detected'}. "
-                f"Answer directly from this. Do not use any tool."
-            ))
-            full_messages = [SystemMessage(content=SYSTEM_PROMPT), scene_msg] + messages
+            log_summary = get_summary(minutes=60)
+            context = (
+                f"Current scene: {people} {'worker' if people == 1 else 'workers'} detected, "
+                f"motion {'active' if motion else 'not detected'}.\n"
+                f"{log_summary}\n"
+                f"Answer the user's safety question using this data. Do not use any tool."
+            )
+            full_messages = [SystemMessage(content=SYSTEM_PROMPT),
+                             SystemMessage(content=context)] + messages
         except Exception:
             full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
     else:
