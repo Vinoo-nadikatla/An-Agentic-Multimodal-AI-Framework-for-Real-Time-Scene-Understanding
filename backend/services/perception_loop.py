@@ -47,7 +47,7 @@ def _camera_reader_loop() -> None:
 
         frame_count += 1
         # Queue every 8th frame for the detection thread
-        if frame_count % 8 == 0:
+        if frame_count % 5 == 0:
             try:
                 _frame_queue.put_nowait(frame)
             except queue.Full:
@@ -73,7 +73,7 @@ def _camera_reader_loop() -> None:
             except Exception as e:
                 logger.error("Scene update error: %s", e)
 
-        time.sleep(0.067)  # ~15 fps
+        time.sleep(0.05)  # ~20 fps
 
     logger.info("Camera reader thread stopped.")
 

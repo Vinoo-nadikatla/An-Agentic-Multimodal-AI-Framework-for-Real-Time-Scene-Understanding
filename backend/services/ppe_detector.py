@@ -3,6 +3,9 @@ ppe_detector.py
 Real-time PPE detection — helmet only via YOLOv8.
 Model loading runs in a background thread — never blocks startup.
 """
+import os
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 import base64
 import logging
 import threading
@@ -98,30 +101,23 @@ class PPEDetector:
         t = threading.Thread(target=self._load, daemon=True, name="PPEModelLoader")
         t.start()
 
-    def _load(self):
+    def _load(self) -> None:
         try:
-            import warnings
-            warnings.filterwarnings("ignore")
+            from huggingface_hub import hf_hub_download
             from ultralytics import YOLO
 
-            ppe_model_path = (
-                r"C:\Users\vinoo\.cache\huggingface\hub"
-                r"\models--keremberke--yolov8n-hard-hat-detection"
-                r"\snapshots\287bafa2feb311ee45d21f9e9b33315ff6ff955d\best.pt"
+            model_path = hf_hub_download(
+                repo_id="keremberke/yolov8n-hard-hat-detection",
+                filename="best.pt",
             )
-
-            import os
-            if os.path.exists(ppe_model_path):
-                self.model = YOLO(ppe_model_path)
-                logger.info("PPE helmet model loaded: %s", self.model.names)
-            else:
-                self.model = YOLO("yolov8n.pt")
-                logger.info("PPE: using YOLOv8n fallback")
-
+            logger.info("Loading PPE helmet model from: %s", model_path)
+            self.model = YOLO(model_path)
             self.class_names = self.model.names
             self._ready = True
+            logger.info("PPE helmet model loaded: %s", self.class_names)
         except Exception as e:
             logger.error("PPE model load failed: %s", e)
+            self._ready = False
 
     def is_ready(self) -> bool:
         return self._ready and self.model is not None
@@ -216,21 +212,21 @@ ppe_detector = PPEDetector()
 
 # Two-tier frame cache — raw updates every frame, annotated only every 8th (YOLO is slow)
 _cached_raw_frame: str | None = None
+_cached_raw_bytes: bytes | None = None          # latest raw frame bytes — updated every tick
 _cached_annotated_frame: str | None = None
-_cached_annotated_bytes: bytes | None = None   # raw JPEG bytes for MJPEG streaming
+_cached_annotated_bytes: bytes | None = None    # latest annotated frame bytes — updated every 5th frame
 _cache_lock = threading.Lock()
 
 
 def update_raw_frame(frame: np.ndarray) -> None:
     """Encode and cache the raw camera frame — no detection, runs every loop tick."""
-    global _cached_raw_frame, _cached_annotated_bytes
+    global _cached_raw_frame, _cached_raw_bytes
     small = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_LINEAR)
     _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
     frame_bytes = buf.tobytes()
     with _cache_lock:
         _cached_raw_frame = base64.b64encode(frame_bytes).decode()
-        if _cached_annotated_bytes is None:
-            _cached_annotated_bytes = frame_bytes
+        _cached_raw_bytes = frame_bytes
 
 
 def update_cached_frame(frame: np.ndarray) -> dict:
@@ -253,9 +249,9 @@ def get_cached_frame() -> str | None:
 
 
 def get_cached_annotated_bytes() -> bytes | None:
-    """Return raw JPEG bytes of latest frame — used by MJPEG streaming endpoint."""
+    """Return annotated JPEG bytes if available, fall back to raw — used by MJPEG endpoint."""
     with _cache_lock:
-        return _cached_annotated_bytes
+        return _cached_annotated_bytes if _cached_annotated_bytes is not None else _cached_raw_bytes
 
 
 def get_ppe_status() -> dict:

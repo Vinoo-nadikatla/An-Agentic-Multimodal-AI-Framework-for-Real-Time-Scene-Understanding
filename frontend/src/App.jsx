@@ -249,11 +249,14 @@ export default function App() {
 
   const stopRec = () => { if (!recording) return; recorderRef.current?.stop(); setRecording(false); };
 
-  const overallPct = ppeStatus?.overall_compliance ?? 0;
-  const helmetPct  = ppeStatus?.helmet_compliance  ?? 0;
+  const overallPct   = ppeStatus?.overall_compliance ?? 0;
+  const helmetPct    = ppeStatus?.helmet_compliance  ?? 0;
   const totalWorkers = ppeStatus?.total_workers ?? 0;
-  const workers    = ppeStatus?.workers ?? [];
-  const modelReady = ppeStatus?.model_ready ?? false;
+  const compliantCnt = ppeStatus?.compliant ?? 0;
+  const workers      = ppeStatus?.workers ?? [];
+  const modelReady   = ppeStatus?.model_ready ?? false;
+  const workersPct   = totalWorkers > 0 ? Math.round(compliantCnt / totalWorkers * 100) : 0;
+  const workersColor = compliantCnt === totalWorkers && totalWorkers > 0 ? "#00C851" : "#FF4444";
 
   return (
     <div className="shell">
@@ -471,10 +474,13 @@ export default function App() {
                 <span className="metric-icon">👷</span>
                 <span className="metric-name">Workers</span>
                 <div className="metric-bar-wrap">
-                  <div className="metric-count">{totalWorkers} detected</div>
+                  <div className="metric-bar" style={{
+                    width: `${workersPct}%`,
+                    background: workersColor,
+                  }}/>
                 </div>
-                <span className="metric-pct" style={{ color: "var(--muted2)" }}>
-                  {ppeStatus?.compliant ?? 0}/{totalWorkers}
+                <span className="metric-pct" style={{ color: workersColor }}>
+                  {compliantCnt}/{totalWorkers}
                 </span>
               </div>
             </div>
