@@ -12,6 +12,7 @@ dependencies = [
     "gradio>=5.49.1",
     "groq>=0.35.0",
     "gtts>=2.5.4",
+    "huggingface-hub>=1.1.4",
     "langchain>=1.2.15",
     "langchain-core>=1.2.18",
     "langchain-google-genai>=4.0.0",
@@ -28,5 +29,6 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "python-multipart>=0.0.20",
     "speechrecognition>=3.14.3",
+    "ultralytics==8.4.48",
     "uvicorn>=0.38.0",
 ]

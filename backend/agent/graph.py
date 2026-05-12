@@ -44,8 +44,8 @@ def tool_router(state: AgentState) -> Literal["tool_executor", "__end__"]:
     intent = state.get("intent", "general")
     tool_calls_used = state.get("tool_call_count", 0)
 
-    # General queries never need tools
-    if intent == "general":
+    # These intents answer from pre-built context — never invoke tools
+    if intent in {"general", "scene", "report"}:
         return "__end__"
 
     if tool_calls_used >= MAX_TOOL_CALLS:

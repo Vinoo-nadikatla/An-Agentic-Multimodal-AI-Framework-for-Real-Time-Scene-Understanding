@@ -2,10 +2,26 @@ from __future__ import annotations
 import logging
 import re
 from typing import Sequence
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
+
+_TEMPORAL_RE = re.compile(
+    r"\b(happened|history|last|past|ago|earlier|recently|timeline|log|record|minute|hour|today)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_language(text: str) -> str:
+    """Detect if text is Telugu, Hindi, or English based on Unicode script ranges."""
+    telugu_chars = sum(1 for c in text if "ఀ" <= c <= "౿")
+    hindi_chars  = sum(1 for c in text if "ऀ" <= c <= "ॿ")
+    if telugu_chars > 0:
+        return "Telugu"
+    if hindi_chars > 0:
+        return "Hindi"
+    return "English"
 
 SYSTEM_PROMPT = """You are VN AI Safety Monitor, an AI-powered industrial safety assistant with a live camera.
 
@@ -18,41 +34,136 @@ You monitor worker safety in real-time. You can:
 
 Always be specific and actionable in your safety assessments.
 Respond in the same language the user speaks.
+You may answer simple factual questions like current date, time, or weather briefly, then redirect to safety monitoring. Never refuse to respond — always give some answer.
 
 CRITICAL: After the camera tool returns results, immediately give your safety assessment as plain text. Never call any tool a second time."""
 
 def conversation_node(state: dict, llm) -> dict:
+    from datetime import datetime as _dt
     messages = list(state["messages"])
     intent = state.get("intent", "general")
 
+    # Always inject current date/time and detected language for every intent
+    now_str = _dt.now().strftime("%A, %d %B %Y, %I:%M %p")
+    human_msgs = [m for m in messages if isinstance(m, HumanMessage)]
+    last_human = human_msgs[-1].content if human_msgs else ""
+    user_language = _detect_language(last_human)
+
+    if user_language == "Hindi":
+        language_instruction = (
+            "\n\nIMPORTANT: The user is speaking Hindi. "
+            "You MUST respond in Hindi (Devanagari script). Do not respond in English."
+        )
+    elif user_language == "Telugu":
+        language_instruction = (
+            "\n\nIMPORTANT: The user is speaking Telugu. "
+            "You MUST respond in Telugu (Telugu script). Do not respond in English."
+        )
+    else:
+        language_instruction = ""
+
+    dynamic_system = SYSTEM_PROMPT + f"\n\nCurrent date and time: {now_str}" + language_instruction
+    # Reports are always formal English documents — no language override
+    report_system  = SYSTEM_PROMPT + f"\n\nCurrent date and time: {now_str}"
+
+    # Report generation — build structured safety report from live data
+    if intent == "report":
+        try:
+            from services.activity_log import get_summary
+            from services.ppe_detector import get_ppe_status
+            ppe = get_ppe_status()
+            activity = get_summary(minutes=480)
+            worker_lines = "\n".join(
+                f"  - {w['label']}: {', '.join(w['violations']) if w['violations'] else 'Compliant'}"
+                + (f" (Duration: {w['violation_duration']})" if w.get("violation_duration") else "")
+                for w in ppe.get("workers", [])
+            ) or "  No workers currently detected"
+            report_context = (
+                f"Generate a professional industrial safety monitoring report.\n\n"
+                f"Current date/time: {now_str}\n\n"
+                f"LIVE PPE STATUS:\n"
+                f"- Total workers: {ppe['total_workers']}\n"
+                f"- Compliant: {ppe['compliant']}\n"
+                f"- Violations: {ppe['violations']}\n"
+                f"- Helmet compliance: {ppe['helmet_compliance']}%\n"
+                f"- Overall compliance: {ppe['overall_compliance']}%\n\n"
+                f"Workers:\n{worker_lines}\n\n"
+                f"ACTIVITY LOG:\n{activity}\n\n"
+                f"IMPORTANT: You MUST format the report with EXACTLY these 5 numbered sections:\n\n"
+                f"1. EXECUTIVE SUMMARY\n"
+                f"(2-3 sentences about overall safety status)\n\n"
+                f"2. COMPLIANCE SUMMARY\n"
+                f"(bullet points with exact percentages)\n\n"
+                f"3. VIOLATIONS DETECTED\n"
+                f"(list each violation with worker name, what is missing, and duration if available)\n\n"
+                f"4. ACTIVITY TIMELINE\n"
+                f"(chronological list from the activity log)\n\n"
+                f"5. RECOMMENDATIONS\n"
+                f"(numbered list of specific actionable steps)\n\n"
+                f"Do not add any other sections. Do not use conversational language. This is a formal safety report."
+            )
+            full_messages = [SystemMessage(content=report_system),
+                             HumanMessage(content=report_context)]
+        except Exception:
+            full_messages = [SystemMessage(content=report_system)] + messages
+
     # Scene queries — inject real data and answer without tools
-    if intent == "scene":
+    elif intent == "scene":
         try:
             from services.scene_memory import get_scene
             from services.activity_log import get_summary
+            from services.ppe_detector import get_ppe_status
+            ppe   = get_ppe_status()
             scene = get_scene()
-            people = scene.get("people", 0)
-            motion = scene.get("motion", False)
-            log_summary = get_summary(minutes=60)
-            context = (
-                f"Current scene: {people} {'worker' if people == 1 else 'workers'} detected, "
-                f"motion {'active' if motion else 'not detected'}.\n"
-                f"{log_summary}\n"
-                f"Answer the user's safety question using this data. Do not use any tool."
-            )
-            full_messages = [SystemMessage(content=SYSTEM_PROMPT),
-                             SystemMessage(content=context)] + messages
+
+            last_user_text = messages[-1].content if messages else ""
+            if _TEMPORAL_RE.search(last_user_text):
+                # Temporal query — use activity log
+                activity = get_summary(minutes=60)
+                scene_context = (
+                    f"Activity Log (last 60 minutes):\n{activity}\n\n"
+                    f"Current PPE Status:\n"
+                    f"- Workers: {ppe['total_workers']}\n"
+                    f"- Helmet compliance: {ppe['helmet_compliance']}%\n"
+                    f"- Violations: {ppe['violations']}\n"
+                )
+            else:
+                # Live query — use current detection data
+                worker_lines = "\n".join(
+                    f"  - {w['label']}: {', '.join(w['violations']) if w['violations'] else 'Compliant'}"
+                    + (f" ({w['violation_duration']})" if w.get("violation_duration") else "")
+                    for w in ppe.get("workers", [])
+                ) or "  No workers detected"
+                scene_context = (
+                    f"Current Safety Status:\n"
+                    f"- Workers detected: {ppe['total_workers']}\n"
+                    f"- Compliant: {ppe['compliant']}\n"
+                    f"- Violations: {ppe['violations']}\n"
+                    f"- Helmet compliance: {ppe['helmet_compliance']}%\n"
+                    f"- Motion: {'Yes' if scene.get('motion') else 'No'}\n\n"
+                    f"Per-worker status:\n{worker_lines}\n"
+                )
+
+            scene_system = SystemMessage(content=(
+                dynamic_system
+                + "\n\nCRITICAL: Answer ONLY using the data provided below. "
+                "Do NOT call any tool or function. Do NOT use the camera. "
+                "Do NOT guess, assume, or add details not in the data. "
+                "If data says 0 workers, say 0 workers. "
+                "Do not mention gloves, goggles, or any PPE not tracked by the system.\n\n"
+                + scene_context
+            ))
+            full_messages = [scene_system] + messages
         except Exception:
-            full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+            full_messages = [SystemMessage(content=dynamic_system)] + messages
     else:
-        full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+        full_messages = [SystemMessage(content=dynamic_system)] + messages
 
     try:
         ai_msg = llm.invoke(full_messages)
         if isinstance(ai_msg.content, str):
-            # Clean leaked tool syntax and action narration
+            # Remove leaked tool-call XML syntax
             ai_msg.content = re.sub(r'<function=\w+>.*?</function>', '', ai_msg.content, flags=re.DOTALL)
-            ai_msg.content = re.sub(r'\*[^*]+\*', '', ai_msg.content)
             ai_msg.content = ai_msg.content.strip()
         return {"messages": [ai_msg]}
     except Exception as e:

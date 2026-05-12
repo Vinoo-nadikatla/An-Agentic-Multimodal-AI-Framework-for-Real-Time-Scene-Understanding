@@ -1,27 +1,24 @@
 """
 ppe_detector.py
-Real-time PPE (Personal Protective Equipment) detection.
-Uses a pre-trained YOLOv8 model for safety equipment detection.
+Real-time PPE detection — helmet only via YOLOv8.
 Model loading runs in a background thread — never blocks startup.
 """
 import base64
 import logging
 import threading
+from datetime import datetime
 
 import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-HELMET_CLASSES    = {"helmet", "hard hat", "hardhat"}
-NO_HELMET_CLASSES = {"no helmet", "no hard hat", "no-helmet", "no hardhat"}
-VEST_CLASSES      = {"safety vest", "vest", "hi-vis", "high-vis"}
-NO_VEST_CLASSES   = {"no vest", "no safety vest", "no-vest"}
-PERSON_CLASSES    = {"person", "worker"}
+# keremberke/yolov8n-hard-hat-detection class IDs
+HARDHAT_CLASSES    = {0}   # 0 = Hardhat
+NO_HARDHAT_CLASSES = {1}   # 1 = NO-Hardhat
 
-COLOR_COMPLIANT = (0, 200, 0)    # Green
-COLOR_PARTIAL   = (0, 165, 255)  # Orange
-COLOR_VIOLATION = (0, 0, 220)    # Red
+COLOR_COMPLIANT = (0, 200, 0)   # Green
+COLOR_VIOLATION = (0, 0, 220)   # Red
 
 _lock = threading.Lock()
 _latest_result: dict = {
@@ -29,124 +26,172 @@ _latest_result: dict = {
     "total_workers": 0,
     "compliant": 0,
     "violations": 0,
-    "helmet_compliance": 0.0,
-    "vest_compliance": 0.0,
-    "overall_compliance": 0.0,
+    "helmet_compliance": 0,
+    "overall_compliance": 0,
     "annotated_frame": None,
 }
+
+# Violation duration tracking
+_violation_start_times: dict = {}   # worker_label -> datetime when violation started
+
+# TTS announcement throttling
+_last_announcement_time: dict = {}  # worker_label -> last announcement datetime
+ANNOUNCEMENT_INTERVAL = 30          # seconds between repeat announcements
+
+# Centroid-based worker re-identification
+_tracked_workers: dict = {}         # track_id -> {cx, cy, label, last_seen}
+_next_worker_id: int = 1
+MAX_CENTROID_DISTANCE = 200         # pixels
+
+
+def _assign_worker_id(cx: int, cy: int, box_area: int) -> tuple[int, str]:
+    """Match detection to any tracked worker using Y-weighted centroid distance.
+    Active threshold: 200px. Inactive threshold: 300px (1.5×, not 3× — avoids cross-person confusion).
+    Y-axis is weighted 1.5× because workers at different depths differ sharply in Y."""
+    global _next_worker_id
+    now = datetime.now()
+
+    best_id = None
+    best_dist = float("inf")
+
+    for track_id, track in _tracked_workers.items():
+        dx = cx - track["cx"]
+        dy = cy - track["cy"]
+        # Y weighted more heavily — people at different depths/distances have very different Y
+        dist = (dx ** 2 + (dy * 1.5) ** 2) ** 0.5
+        threshold = MAX_CENTROID_DISTANCE if track.get("active", True) else MAX_CENTROID_DISTANCE * 1.5
+        if dist < threshold and dist < best_dist:
+            best_dist = dist
+            best_id = track_id
+
+    if best_id is not None:
+        _tracked_workers[best_id]["cx"] = cx
+        _tracked_workers[best_id]["cy"] = cy
+        _tracked_workers[best_id]["last_seen"] = now
+        _tracked_workers[best_id]["active"] = True
+        return best_id, _tracked_workers[best_id]["label"]
+
+    # Truly new worker — never seen before
+    label = f"Worker {chr(64 + _next_worker_id)}"
+    _tracked_workers[_next_worker_id] = {
+        "cx": cx, "cy": cy,
+        "label": label,
+        "last_seen": now,
+        "active": True,
+    }
+    _next_worker_id += 1
+    return _next_worker_id - 1, label
+
+
+def _cleanup_lost_workers() -> None:
+    """Mark workers inactive if not seen recently. Labels are NEVER deleted — they persist for the session."""
+    now = datetime.now()
+    for track in _tracked_workers.values():
+        track["active"] = (now - track["last_seen"]).total_seconds() <= 5
 
 
 class PPEDetector:
     def __init__(self):
         self.model = None
         self.class_names = {}
-        self._model_ready = threading.Event()
-        # Load model in background so it never blocks server startup
-        t = threading.Thread(target=self._load_model, daemon=True, name="PPEModelLoader")
+        self._ready = False
+        t = threading.Thread(target=self._load, daemon=True, name="PPEModelLoader")
         t.start()
 
-    def _load_model(self):
+    def _load(self):
         try:
-            from huggingface_hub import hf_hub_download
+            import warnings
+            warnings.filterwarnings("ignore")
             from ultralytics import YOLO
-            logger.info("PPE: downloading weights from HuggingFace hub...")
-            local_path = hf_hub_download(
-                repo_id="keremberke/yolov8n-hard-hat-detection",
-                filename="best.pt",
+
+            ppe_model_path = (
+                r"C:\Users\vinoo\.cache\huggingface\hub"
+                r"\models--keremberke--yolov8n-hard-hat-detection"
+                r"\snapshots\287bafa2feb311ee45d21f9e9b33315ff6ff955d\best.pt"
             )
-            logger.info("PPE: weights at %s", local_path)
-            model = YOLO(local_path)
-            model.overrides["conf"] = 0.3
-            model.overrides["iou"] = 0.45
-            self.model = model
-            self.class_names = model.names
-            logger.info("PPE model ready. Classes: %s", self.class_names)
-        except Exception as e:
-            logger.warning("PPE: specialized model failed (%s), trying yolov8n.pt", e)
-            try:
-                from ultralytics import YOLO
+
+            import os
+            if os.path.exists(ppe_model_path):
+                self.model = YOLO(ppe_model_path)
+                logger.info("PPE helmet model loaded: %s", self.model.names)
+            else:
                 self.model = YOLO("yolov8n.pt")
-                self.class_names = self.model.names
-                logger.info("PPE: fallback model ready (COCO classes). Classes: %s", self.class_names)
-            except Exception as e2:
-                logger.error("PPE: model load failed entirely: %s", e2)
-        finally:
-            self._model_ready.set()
+                logger.info("PPE: using YOLOv8n fallback")
+
+            self.class_names = self.model.names
+            self._ready = True
+        except Exception as e:
+            logger.error("PPE model load failed: %s", e)
 
     def is_ready(self) -> bool:
-        return self._model_ready.is_set() and self.model is not None
+        return self._ready and self.model is not None
 
     def detect(self, frame: np.ndarray) -> dict:
         if not self.is_ready() or frame is None:
             return dict(_latest_result)
 
         try:
-            results = self.model(frame, verbose=False)[0]
+            _cleanup_lost_workers()
+            results   = self.model(frame, verbose=False)[0]
             annotated = frame.copy()
 
-            persons, helmets, no_helmets, vests, no_vests = [], [], [], [], []
-
-            for box in results.boxes:
-                cls_id    = int(box.cls[0])
-                cls_name  = self.class_names.get(cls_id, "").lower()
-                conf      = float(box.conf[0])
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                det = {"box": (x1, y1, x2, y2), "conf": conf}
-
-                if any(c in cls_name for c in PERSON_CLASSES):
-                    persons.append(det)
-                elif any(c in cls_name for c in HELMET_CLASSES):
-                    helmets.append(det)
-                elif any(c in cls_name for c in NO_HELMET_CLASSES):
-                    no_helmets.append(det)
-                elif any(c in cls_name for c in VEST_CLASSES):
-                    vests.append(det)
-                elif any(c in cls_name for c in NO_VEST_CLASSES):
-                    no_vests.append(det)
-
             workers = []
-            for i, person in enumerate(persons):
-                px1, py1, px2, py2 = person["box"]
-                pcx = (px1 + px2) // 2
+            for box in results.boxes:
+                conf = float(box.conf[0])
+                if conf < 0.40:
+                    continue
 
-                has_helmet     = any(abs((h["box"][0] + h["box"][2]) // 2 - pcx) < 100 for h in helmets)
-                missing_helmet = any(abs((h["box"][0] + h["box"][2]) // 2 - pcx) < 100 for h in no_helmets)
-                has_vest       = any(abs((v["box"][0] + v["box"][2]) // 2 - pcx) < 120 for v in vests)
-                missing_vest   = any(abs((v["box"][0] + v["box"][2]) // 2 - pcx) < 120 for v in no_vests)
+                cls_id = int(box.cls[0])
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                box_area = (x2 - x1) * (y2 - y1)
+                frame_area = frame.shape[0] * frame.shape[1]
+                if box_area / frame_area < 0.02:
+                    continue
 
-                violations = []
-                if missing_helmet: violations.append("No Helmet")
-                if missing_vest:   violations.append("No Vest")
+                track_id, worker_label = _assign_worker_id(cx, cy, box_area)
 
-                if not violations:       status, color = "compliant", COLOR_COMPLIANT
-                elif len(violations) == 1: status, color = "partial",   COLOR_PARTIAL
-                else:                    status, color = "violation",  COLOR_VIOLATION
+                has_helmet = cls_id in HARDHAT_CLASSES
+                status     = "compliant" if has_helmet else "violation"
+                color      = COLOR_COMPLIANT if has_helmet else COLOR_VIOLATION
+                violations = [] if has_helmet else ["No Helmet"]
+
+                # Violation duration tracking
+                if status == "violation":
+                    if worker_label not in _violation_start_times:
+                        _violation_start_times[worker_label] = datetime.now()
+                    elapsed = int((datetime.now() - _violation_start_times[worker_label]).total_seconds())
+                    duration_str = f"{elapsed // 3600:02d}:{(elapsed % 3600) // 60:02d}:{elapsed % 60:02d}"
+                else:
+                    _violation_start_times.pop(worker_label, None)
+                    duration_str = None
 
                 worker = {
-                    "id": i + 1,
-                    "box": person["box"],
+                    "id": track_id,
+                    "box": (x1, y1, x2, y2),
                     "has_helmet": has_helmet,
-                    "has_vest": has_vest,
                     "status": status,
                     "violations": violations,
-                    "label": f"Worker {chr(65 + i)}",
+                    "label": worker_label,
+                    "violation_duration": duration_str,
+                    "active": True,
                 }
                 workers.append(worker)
 
-                # Annotate frame
-                cv2.rectangle(annotated, (px1, py1), (px2, py2), color, 2)
-                status_text = (f"Worker {chr(65 + i)}" +
-                               (" - Compliant" if not violations else f" - {', '.join(violations)}"))
-                cv2.rectangle(annotated, (px1, py1 - 25), (px2, py1), color, -1)
-                cv2.putText(annotated, status_text, (px1 + 4, py1 - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                label_text = worker_label + (" - OK" if has_helmet else " - No Helmet")
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(annotated, (x1, y1 - 22), (x2, y1), color, -1)
+                cv2.putText(annotated, label_text, (x1 + 3, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
+            # Only count workers visible in this frame (active=True was set in _assign_worker_id)
+            workers = [w for w in workers if w.get("active", True)]
             total         = len(workers)
-            compliant_cnt = sum(1 for w in workers if w["status"] == "compliant")
-            helmet_ok     = sum(1 for w in workers if w["has_helmet"])
-            vest_ok       = sum(1 for w in workers if w["has_vest"])
+            compliant_cnt = sum(w["status"] == "compliant" for w in workers)
+            helmet_ok     = sum(w["has_helmet"] for w in workers)
 
-            _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            annotated_small = cv2.resize(annotated, (480, 270), interpolation=cv2.INTER_LINEAR)
+            _, buf = cv2.imencode(".jpg", annotated_small, [cv2.IMWRITE_JPEG_QUALITY, 55])
             ann_b64 = base64.b64encode(buf).decode()
 
             result = {
@@ -154,9 +199,8 @@ class PPEDetector:
                 "total_workers": total,
                 "compliant": compliant_cnt,
                 "violations": total - compliant_cnt,
-                "helmet_compliance":  round(helmet_ok / total * 100) if total > 0 else 100,
-                "vest_compliance":    round(vest_ok   / total * 100) if total > 0 else 100,
-                "overall_compliance": round(compliant_cnt / total * 100) if total > 0 else 100,
+                "helmet_compliance":  round(helmet_ok / total * 100) if total > 0 else 0,
+                "overall_compliance": round(compliant_cnt / total * 100) if total > 0 else 0,
                 "annotated_frame": ann_b64,
             }
             with _lock:
@@ -170,6 +214,49 @@ class PPEDetector:
 
 ppe_detector = PPEDetector()
 
+# Two-tier frame cache — raw updates every frame, annotated only every 8th (YOLO is slow)
+_cached_raw_frame: str | None = None
+_cached_annotated_frame: str | None = None
+_cached_annotated_bytes: bytes | None = None   # raw JPEG bytes for MJPEG streaming
+_cache_lock = threading.Lock()
+
+
+def update_raw_frame(frame: np.ndarray) -> None:
+    """Encode and cache the raw camera frame — no detection, runs every loop tick."""
+    global _cached_raw_frame, _cached_annotated_bytes
+    small = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_LINEAR)
+    _, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    frame_bytes = buf.tobytes()
+    with _cache_lock:
+        _cached_raw_frame = base64.b64encode(frame_bytes).decode()
+        if _cached_annotated_bytes is None:
+            _cached_annotated_bytes = frame_bytes
+
+
+def update_cached_frame(frame: np.ndarray) -> dict:
+    """Run YOLO detection, cache annotated frame (b64 + raw bytes for MJPEG)."""
+    global _cached_annotated_frame, _cached_annotated_bytes
+    result = ppe_detector.detect(frame)
+    ann_b64 = result.get("annotated_frame")
+    if ann_b64:
+        frame_bytes = base64.b64decode(ann_b64)
+        with _cache_lock:
+            _cached_annotated_frame = ann_b64
+            _cached_annotated_bytes = frame_bytes
+    return result
+
+
+def get_cached_frame() -> str | None:
+    """Return annotated frame if available, fall back to raw frame."""
+    with _cache_lock:
+        return _cached_annotated_frame or _cached_raw_frame
+
+
+def get_cached_annotated_bytes() -> bytes | None:
+    """Return raw JPEG bytes of latest frame — used by MJPEG streaming endpoint."""
+    with _cache_lock:
+        return _cached_annotated_bytes
+
 
 def get_ppe_status() -> dict:
     with _lock:
@@ -182,3 +269,33 @@ def get_ppe_status() -> dict:
 def get_annotated_frame() -> str | None:
     with _lock:
         return _latest_result.get("annotated_frame")
+
+
+def get_pending_announcements() -> list[str]:
+    """Returns TTS announcement strings for workers missing a helmet for more than 30 seconds."""
+    announcements = []
+    now = datetime.now()
+
+    with _lock:
+        workers = list(_latest_result.get("workers", []))
+
+    for worker in workers:
+        label = worker["label"]
+        if worker["status"] != "violation":
+            _last_announcement_time.pop(label, None)
+            continue
+
+        start = _violation_start_times.get(label)
+        if not start or (now - start).total_seconds() < 30:
+            continue
+
+        last = _last_announcement_time.get(label)
+        if last and (now - last).total_seconds() < ANNOUNCEMENT_INTERVAL:
+            continue
+
+        announcements.append(
+            f"Warning. {label} is not wearing a helmet. Please wear PPE immediately."
+        )
+        _last_announcement_time[label] = now
+
+    return announcements

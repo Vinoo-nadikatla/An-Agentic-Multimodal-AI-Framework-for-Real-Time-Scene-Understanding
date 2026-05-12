@@ -1,14 +1,14 @@
 from __future__ import annotations
 import asyncio, base64, logging, os, tempfile, uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 import cv2, uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from fastapi import Request
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -29,21 +29,19 @@ def _try_start_server_camera():
     except Exception as e:
         logger.info("Server-side camera not available (%s)", e)
 
-app = FastAPI(title="Vision Assistant API", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     _try_start_server_camera()
-
-@app.on_event("shutdown")
-async def shutdown():
+    yield
     if _server_camera_active:
         try:
             from services.camera_stream import camera_stream
             camera_stream.stop()
         except Exception:
             pass
+
+app = FastAPI(title="Vision Assistant API", version="2.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/health")
 async def health():
@@ -56,7 +54,7 @@ async def camera_feed():
         frame = camera_stream.get_frame()
         if frame is None:
             return JSONResponse({"frame": None})
-        _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
         b64 = base64.b64encode(buf).decode()
         return JSONResponse({"frame": b64})
     except Exception:
@@ -89,6 +87,80 @@ async def ppe_feed():
     from services.ppe_detector import get_annotated_frame
     frame = get_annotated_frame()
     return {"frame": frame}
+
+@app.get("/api/video-stream")
+async def video_stream():
+    """MJPEG stream — browser connects once, frames push continuously."""
+    async def generate():
+        while True:
+            try:
+                from services.ppe_detector import get_cached_annotated_bytes
+                frame_bytes = get_cached_annotated_bytes()
+                if frame_bytes:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n" +
+                        frame_bytes +
+                        b"\r\n"
+                    )
+                await asyncio.sleep(0.033)  # ~30 fps cap
+            except Exception:
+                await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+@app.get("/api/camera-frame")
+async def camera_frame():
+    """Fast endpoint — returns latest cached frame (raw or annotated). No detection here."""
+    from services.ppe_detector import get_cached_frame
+    frame = get_cached_frame()
+    if frame:
+        return {"frame": frame}
+    # Fallback: encode current camera frame directly
+    try:
+        from services.camera_stream import camera_stream
+        raw = camera_stream.get_frame()
+        if raw is not None:
+            _, buf = cv2.imencode(".jpg", cv2.resize(raw, (480, 270)), [cv2.IMWRITE_JPEG_QUALITY, 55])
+            return {"frame": base64.b64encode(buf).decode()}
+    except Exception:
+        pass
+    return {"frame": None}
+
+@app.get("/api/ppe-combined")
+async def ppe_combined():
+    """Returns cached annotated frame and status — detection runs in background, not here."""
+    from services.ppe_detector import get_ppe_status, get_cached_frame
+    status = get_ppe_status()
+    frame = get_cached_frame()
+    return {"status": status, "frame": frame}
+
+@app.get("/api/safety-alerts")
+async def safety_alerts():
+    from services.ppe_detector import get_ppe_status
+    status = get_ppe_status()
+    alerts = []
+    for worker in status.get("workers", []):
+        if not worker.get("has_helmet", True):
+            alerts.append({
+                "worker": worker.get("label", "Unknown"),
+                "violations": ["No Helmet"],
+                "severity": "critical",
+            })
+    return {"alerts": alerts, "total": len(alerts)}
+
+@app.get("/api/announcements")
+async def get_announcements():
+    from services.ppe_detector import get_pending_announcements
+    return {"announcements": get_pending_announcements()}
 
 @app.post("/api/transcribe")
 async def transcribe(file: UploadFile):
@@ -209,7 +281,7 @@ FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa_fallback(full_path: str):
+    async def spa_fallback():
         return FileResponse(str(FRONTEND_DIST / "index.html"))
 else:
     @app.get("/", include_in_schema=False)

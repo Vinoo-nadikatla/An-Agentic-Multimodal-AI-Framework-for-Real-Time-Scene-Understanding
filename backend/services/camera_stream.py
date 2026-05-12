@@ -159,6 +159,7 @@ class CameraStream:
         self.cap = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        self.cap.set(cv2.CAP_PROP_FPS, 15)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # minimise latency
 
         if not self.cap.isOpened():
@@ -171,10 +172,12 @@ class CameraStream:
 
     def stop(self) -> None:
         self.running = False
-        if self._thread:
-            self._thread.join(timeout=2.0)
+        # Release before join so cap.read() unblocks immediately
         if self.cap:
             self.cap.release()
+            self.cap = None
+        if self._thread:
+            self._thread.join(timeout=2.0)
         logger.info("CameraStream stopped.")
 
     # ------------------------------------------------------------------
@@ -214,6 +217,7 @@ class CameraStream:
         self.cap = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        self.cap.set(cv2.CAP_PROP_FPS, 15)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     # ------------------------------------------------------------------
@@ -233,16 +237,7 @@ class CameraStream:
 
 # Module-level singleton
 camera_stream = CameraStream()
-def get_recent_frames(self, count: int = 5, interval_ms: int = 400) -> list:
-        """Capture multiple frames over time for video understanding."""
-        import time
-        frames = []
-        for _ in range(count):
-            frame = self.get_frame()
-            if frame is not None:
-                frames.append(frame)
-            time.sleep(interval_ms / 1000)
-        return frames
 
-# Module-level singleton
-camera_stream = CameraStream()   
+# Release camera on any exit — covers both graceful and abnormal termination
+import atexit
+atexit.register(camera_stream.stop)

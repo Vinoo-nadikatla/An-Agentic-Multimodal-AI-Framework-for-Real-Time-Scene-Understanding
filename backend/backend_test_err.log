@@ -1,0 +1,13 @@
+INFO:     Started server process [27672]
+INFO:     Waiting for application startup.
+2026-05-11 19:48:39,819 [INFO] services.camera_stream: CameraStream started on index 0
+2026-05-11 19:48:39,832 [INFO] main: Server-side camera started.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-05-11 19:48:51,988 [INFO] services.perception_loop: Perception loop started.
+2026-05-11 19:48:52,882 [INFO] services.ppe_detector: PPE helmet model loaded: {0: 'Hardhat', 1: 'NO-Hardhat'}
+forrtl: error (200): program aborting due to window-CLOSE event
+Image              PC                Routine            Line        Source             
+KERNELBASE.dll     00007FF9BE0A348D  Unknown               Unknown  Unknown
+KERNEL32.DLL       00007FF9C0B4E957  Unknown               Unknown  Unknown
+ntdll.dll          00007FF9C152427C  Unknown               Unknown  Unknown

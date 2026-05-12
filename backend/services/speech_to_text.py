@@ -84,12 +84,8 @@ STT_MODEL = "whisper-large-v3-turbo"
 def transcribe_with_groq(audio_filepath: str) -> str:
     """
     Transcribe an audio file using Groq Whisper.
-
-    Args:
-        audio_filepath: Path to the audio file (mp3, wav, m4a, webm supported).
-
-    Returns:
-        Transcribed text string.
+    First tries auto-detect; if no Indic script is found in the result,
+    retries with explicit Telugu language hint.
     """
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -97,15 +93,31 @@ def transcribe_with_groq(audio_filepath: str) -> str:
 
     client = Groq(api_key=api_key)
 
-    try:
+    def _call(language: str | None = None) -> str:
         with open(audio_filepath, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
+            kwargs: dict = dict(
                 model=STT_MODEL,
                 file=audio_file,
-               
+                prompt="This audio may be in Telugu, Hindi, Tamil, or English. Transcribe accurately in the original script.",
             )
-        logger.info("Transcription: %s", transcription.text)
-        return transcription.text
+            if language:
+                kwargs["language"] = language
+            return client.audio.transcriptions.create(**kwargs).text
+
+    try:
+        result = _call()
+        logger.info("Transcription (auto): %s", result)
+
+        has_telugu = any("ఀ" <= c <= "౿" for c in result)
+        has_hindi  = any("ऀ" <= c <= "ॿ" for c in result)
+
+        if result and not has_telugu and not has_hindi:
+            tel_result = _call(language="te")
+            logger.info("Transcription (te retry): %s", tel_result)
+            if any("ఀ" <= c <= "౿" for c in tel_result):
+                return tel_result
+
+        return result
 
     except Exception as e:
         logger.error("Transcription failed: %s", e)

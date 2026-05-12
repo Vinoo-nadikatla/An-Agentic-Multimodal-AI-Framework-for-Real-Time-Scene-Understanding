@@ -4,53 +4,74 @@ Thread-safe activity log for safety monitoring.
 Records timestamped events triggered by scene changes.
 """
 import threading
-import time
-from datetime import datetime
 from collections import deque
+from datetime import datetime, timedelta
 
 _lock = threading.Lock()
 _log: deque = deque(maxlen=200)
 
 
-def add_entry(people: int, motion: bool, description: str = "") -> None:
+def add_entry(people: int, motion: bool, description: str = "", ppe_workers: list = None) -> None:
+    now = datetime.now()
     entry = {
-        "timestamp": time.time(),
-        "time_str": datetime.now().strftime("%I:%M %p"),
-        "date_str": datetime.now().strftime("%Y-%m-%d"),
+        "time": now,
+        "time_str": now.strftime("%I:%M %p"),
         "people": people,
         "motion": motion,
         "description": description,
+        "ppe_workers": ppe_workers or [],
     }
     with _lock:
         _log.append(entry)
 
 
 def get_recent(minutes: int = 60) -> list:
-    cutoff = time.time() - (minutes * 60)
+    cutoff = datetime.now() - timedelta(minutes=minutes)
     with _lock:
-        return [e for e in _log if e["timestamp"] >= cutoff]
+        return [e for e in _log if e["time"] >= cutoff]
 
 
 def get_summary(minutes: int = 60) -> str:
-    entries = get_recent(minutes)
-    if not entries:
-        return "No activity recorded in this period."
-    total = len(entries)
-    with_people = [e for e in entries if e["people"] > 0]
-    with_motion = [e for e in entries if e["motion"]]
+    cutoff = datetime.now() - timedelta(minutes=minutes)
+    with _lock:
+        recent = [e for e in _log if e["time"] >= cutoff]
+
+    if not recent:
+        return "No activity recorded in the last hour."
+
     lines = [f"Activity summary — last {minutes} minutes:"]
+    lines.append(f"- Snapshots recorded: {len(recent)}")
+
+    with_people = [e for e in recent if e["people"] > 0]
     if with_people:
-        lines.append(f"- Workers detected: {len(with_people)} of {total} snapshots")
+        lines.append(f"- Workers detected: {len(with_people)} of {len(recent)} snapshots")
         lines.append(f"- First seen: {with_people[0]['time_str']}, Last seen: {with_people[-1]['time_str']}")
-    else:
-        lines.append("- No workers detected in this period")
-    if with_motion:
-        lines.append(f"- Movement detected in {len(with_motion)} snapshots")
-    descriptions = [e["description"] for e in entries if e["description"]]
-    if descriptions:
-        lines.append("Safety observations:")
-        for d in descriptions[-5:]:
-            lines.append(f"  • {d}")
+
+    motion_count = sum(1 for e in recent if e["motion"])
+    lines.append(f"- Movement detected in {motion_count} snapshots")
+
+    # PPE violation timeline — only emit a line when a worker's state changes
+    ppe_events = [e for e in recent if e.get("ppe_workers")]
+    if ppe_events:
+        lines.append("\nPPE Timeline:")
+        seen_states: dict = {}
+        for e in ppe_events:
+            for w in e["ppe_workers"]:
+                wid = w["label"]
+                state = tuple(sorted(w.get("violations", [])))
+                if seen_states.get(wid) != state:
+                    seen_states[wid] = state
+                    if state:
+                        lines.append(f"  {e['time_str']} - {wid}: {', '.join(state)}")
+                    else:
+                        lines.append(f"  {e['time_str']} - {wid}: Compliant")
+
+    descs = [e["description"] for e in recent if e.get("description")]
+    if descs:
+        lines.append("\nSafety observations:")
+        for d in set(descs):
+            lines.append(f"  - {d}")
+
     return "\n".join(lines)
 
 

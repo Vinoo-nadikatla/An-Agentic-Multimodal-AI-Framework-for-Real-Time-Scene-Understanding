@@ -6,10 +6,10 @@ const SESSION_ID = crypto.randomUUID();
 const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 const SUGGESTIONS = [
-  "What do you see right now?",
-  "How many people are in the room?",
-  "Describe my surroundings",
-  "Is there any movement?",
+  "Check PPE compliance now",
+  "How many workers are present?",
+  "Describe safety hazards you see",
+  "Is anyone missing a helmet?",
 ];
 
 async function speakWithGTTS(text, apiBase, setCurrentAudio) {
@@ -36,23 +36,33 @@ function speak(text, apiBase = "", setCurrentAudio = () => {}) {
   const clean = text.replace(/[*_#`]/g, "").trim();
   if (!clean) return;
 
-  const hasTelugu = /[\u0C00-\u0C7F]/.test(clean);
-  const hasHindi  = /[\u0900-\u097F]/.test(clean);
-  const hasTamil  = /[\u0B80-\u0BFF]/.test(clean);
-  const isNonEnglish = hasTelugu || hasHindi || hasTamil;
+  const hasTelugu = /[ఀ-౿]/.test(clean);
+  const hasHindi  = /[ऀ-ॿ]/.test(clean);
+  const hasTamil  = /[஀-௿]/.test(clean);
 
-  if (isNonEnglish) {
+  if (hasTelugu || hasHindi || hasTamil) {
     speakWithGTTS(clean, apiBase, setCurrentAudio);
     return;
   }
 
-  // English \u2014 use browser TTS
   if (!window.speechSynthesis) return;
   window.speechSynthesis.cancel();
   const utt = new SpeechSynthesisUtterance(clean);
   utt.rate = 0.92;
   utt.lang = "en-US";
   window.speechSynthesis.speak(utt);
+}
+
+function complianceColor(pct) {
+  if (pct >= 80) return "#00C851";
+  if (pct >= 50) return "#FF8800";
+  return "#FF4444";
+}
+
+function workerIcon(status) {
+  if (status === "compliant") return "✅";
+  if (status === "partial")   return "⚠️";
+  return "❌";
 }
 
 export default function App() {
@@ -64,14 +74,14 @@ export default function App() {
   const [recording, setRecording]   = useState(false);
   const [processing, setProcessing] = useState(false);
   const [ttsOn, setTtsOn]           = useState(true);
-  const [camStream, setCamStream]   = useState(null);
   const [currentAudio, setCurrentAudio] = useState(null);
+  const [ppeStatus, setPpeStatus]   = useState(null);
+  const [safetyAlerts, setSafetyAlerts] = useState({ alerts: [], total: 0 });
 
   const bottomRef   = useRef(null);
   const inputRef    = useRef(null);
   const recorderRef = useRef(null);
   const chunksRef   = useRef([]);
-  const videoRef    = useRef(null);  
 
   const API_BASE = import.meta.env.VITE_API_URL || "";
   const WS_BASE  = API_BASE.replace(/^http/, "ws") || `ws://${window.location.host}`;
@@ -82,7 +92,7 @@ export default function App() {
     onEnd:    ()  => {
       setThinking(false);
       setStreaming((prev) => {
-        if (prev.trim()) {
+        if (prev) {
           setMessages((m) => [...m, { role: "assistant", text: prev, time: now() }]);
           if (ttsOn) speak(prev, API_BASE, setCurrentAudio);
         }
@@ -96,14 +106,14 @@ export default function App() {
     },
   });
 
-  // scene polling
+  // Scene polling
   useEffect(() => {
     const poll = async () => {
       try { const r = await fetch(`${API_BASE}/api/scene`); if (r.ok) setScene(await r.json()); }
       catch (_) {}
     };
     poll();
-    const id = setInterval(poll, 3000);
+    const id = setInterval(poll, 5000);
     return () => clearInterval(id);
   }, []);
 
@@ -126,9 +136,9 @@ export default function App() {
 
         const sendFrame = async () => {
           if (!alive) return;
-          canvas.width = 512;
-          canvas.height = 512;
-          ctx.drawImage(video, 0, 0, 512, 512);
+          canvas.width = 320;
+          canvas.height = 320;
+          ctx.drawImage(video, 0, 0, 320, 320);
           const b64 = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
           try {
             await fetch(`${API_BASE}/api/stream-frame`, {
@@ -152,41 +162,69 @@ export default function App() {
     };
   }, []);
 
-  // auto scroll
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streaming]);
-
-  // camera preview — polls server-side OpenCV feed
+  // Slow PPE status poll — compliance numbers, worker list
   useEffect(() => {
-    let alive = true;
-    const loop = async () => {
-      while (alive) {
-        try {
-          const r = await fetch(`${API_BASE}/api/camera-feed`);
-          if (r.ok) {
-            const d = await r.json();
-            if (d.frame) setCamStream(d.frame);
-          }
-        } catch (_) {}
-        await new Promise(res => setTimeout(res, 500));
-      }
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/ppe-status`);
+        const data = await res.json();
+        setPpeStatus(data);
+      } catch (_) {}
     };
-    loop();
-    return () => { alive = false; };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => clearInterval(id);
   }, []);
+
+  // Safety alerts — poll every 8 seconds
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/safety-alerts`);
+        if (r.ok) setSafetyAlerts(await r.json());
+      } catch (_) {}
+    };
+    poll();
+    const id = setInterval(poll, 8000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Automated TTS safety announcements — speak when violation exceeds 30s
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/announcements`);
+        const data = await res.json();
+        if (data.announcements?.length > 0) {
+          data.announcements.forEach(text => {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 0.9;
+            utterance.volume = 1;
+            window.speechSynthesis.speak(utterance);
+          });
+        }
+      } catch (_) {}
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Auto scroll
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streaming]);
 
   const send = (text) => {
     const t = text.trim();
     if (!t || !connected || isThinking) return;
-    // Stop any ongoing speech immediately
     window.speechSynthesis?.cancel();
     setCurrentAudio(prev => { prev?.pause(); return null; });
     setMessages((m) => [...m, { role: "user", text: t, time: now() }]);
     sendMessage({ type: "message", text: t });
     setDraft("");
     inputRef.current?.focus();
-};
+  };
 
   const startRec = async () => {
+    window.speechSynthesis?.cancel();
+    setCurrentAudio(prev => { prev?.pause(); return null; });
     chunksRef.current = [];
     try {
       const stream   = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -204,109 +242,61 @@ export default function App() {
           if (resp.ok) { const { text } = await resp.json(); if (text?.trim()) send(text); }
         } finally { setProcessing(false); }
       };
-      recorder.start(); setTimeout(() => {}, 500);
+      recorder.start();
       setRecording(true);
     } catch (e) { console.error(e); }
   };
 
   const stopRec = () => { if (!recording) return; recorderRef.current?.stop(); setRecording(false); };
 
+  const overallPct = ppeStatus?.overall_compliance ?? 0;
+  const helmetPct  = ppeStatus?.helmet_compliance  ?? 0;
+  const totalWorkers = ppeStatus?.total_workers ?? 0;
+  const workers    = ppeStatus?.workers ?? [];
+  const modelReady = ppeStatus?.model_ready ?? false;
+
   return (
     <div className="shell">
       <div className="bg-mesh" />
 
-      {/* ── Sidebar ── */}
-      <aside className="sidebar">
-        <div className="brand">
-          <svg className="brand-icon" viewBox="0 0 32 32" fill="none">
-            <circle cx="16" cy="16" r="14" stroke="url(#g1)" strokeWidth="2"/>
-            <circle cx="16" cy="16" r="6" fill="url(#g2)"/>
-            <circle cx="16" cy="7" r="2" fill="#a78bfa"/>
-            <circle cx="25" cy="21" r="2" fill="#60a5fa"/>
-            <circle cx="7" cy="21" r="2" fill="#f472b6"/>
-            <defs>
-              <linearGradient id="g1" x1="0" y1="0" x2="32" y2="32">
-                <stop offset="0%" stopColor="#a78bfa"/><stop offset="100%" stopColor="#60a5fa"/>
-              </linearGradient>
-              <linearGradient id="g2" x1="0" y1="0" x2="32" y2="32">
-                <stop offset="0%" stopColor="#818cf8"/><stop offset="100%" stopColor="#38bdf8"/>
-              </linearGradient>
-            </defs>
-          </svg>
-          <span className="brand-name">VN AI</span>
-        </div>
-
-        {/* Camera preview */}
-        <div className="cam-preview-wrap">
-          <div className="cam-preview">
-            {camStream
-              ? <img
-                  src={`data:image/jpeg;base64,${camStream}`}
-                  className="cam-video"
-                  alt="Live camera"
-                  style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}
-                />
-              : <div className="cam-no-feed">
-                  <span>📷</span>
-                  <p>Camera loading...</p>
-                </div>
-            }
-            <div className={`cam-live-badge ${camStream ? "live" : ""}`}>
-              <span className="live-dot"/> {camStream ? "LIVE" : "OFF"}
-            </div>
-          </div>
-        </div>
-
-        {sceneInfo && (
-          <div className="sidebar-section">
-            <p className="sidebar-label">Scene Analysis</p>
-            <div className="scene-card">
-              <div className="scene-row">
-                <span className="scene-icon">👥</span>
-                <span className="scene-val">{sceneInfo.people} {sceneInfo.people === 1 ? "Person" : "People"} detected</span>
-              </div>
-              <div className="scene-row">
-                <span className="scene-icon">{sceneInfo.motion ? "⚡" : "○"}</span>
-                <span className="scene-val">{sceneInfo.motion ? "Motion Detected" : "No Motion"}</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="sidebar-section">
-          <p className="sidebar-label">Quick Ask</p>
-          <div className="quick-btns">
-            {SUGGESTIONS.map((s) => (
-              <button key={s} className="quick-btn" onClick={() => send(s)}>{s}</button>
-            ))}
-          </div>
-        </div>
-
-        <div className="tts-toggle">
-          <span>🔊 Voice replies</span>
-          <button className={`toggle-btn ${ttsOn ? "on" : ""}`} onClick={() => setTtsOn(!ttsOn)}>
-            {ttsOn ? "ON" : "OFF"}
-          </button>
-        </div>
-
-        <div className="sidebar-footer">Powered by Groq + LangGraph</div>
-      </aside>
-
-      {/* ── Chat ── */}
+      {/* ── LEFT PANEL: Chat ── */}
       <div className="chat-panel">
         <div className="topbar">
-          <span className="topbar-title">Vision Assistant</span>
-          <span className={`conn-badge ${connected ? "on" : "off"}`}>
-            <span className="conn-dot"/> {connected ? "Connected" : "Reconnecting…"}
-          </span>
+          <div className="topbar-left">
+            <svg className="brand-icon" viewBox="0 0 32 32" fill="none">
+              <circle cx="16" cy="16" r="14" stroke="url(#g1)" strokeWidth="2"/>
+              <circle cx="16" cy="16" r="6" fill="url(#g2)"/>
+              <circle cx="16" cy="7"  r="2" fill="#a78bfa"/>
+              <circle cx="25" cy="21" r="2" fill="#60a5fa"/>
+              <circle cx="7"  cy="21" r="2" fill="#f472b6"/>
+              <defs>
+                <linearGradient id="g1" x1="0" y1="0" x2="32" y2="32">
+                  <stop offset="0%" stopColor="#a78bfa"/><stop offset="100%" stopColor="#60a5fa"/>
+                </linearGradient>
+                <linearGradient id="g2" x1="0" y1="0" x2="32" y2="32">
+                  <stop offset="0%" stopColor="#818cf8"/><stop offset="100%" stopColor="#38bdf8"/>
+                </linearGradient>
+              </defs>
+            </svg>
+            <span className="topbar-title">VN AI Safety Monitor</span>
+          </div>
+          <div className="topbar-right">
+            <button className={`toggle-btn ${ttsOn ? "on" : ""}`} onClick={() => setTtsOn(!ttsOn)}
+              title="Toggle voice replies">
+              {ttsOn ? "🔊 ON" : "🔇 OFF"}
+            </button>
+            <span className={`conn-badge ${connected ? "on" : "off"}`}>
+              <span className="conn-dot"/> {connected ? "Live" : "Reconnecting…"}
+            </span>
+          </div>
         </div>
 
         <div className="messages-area">
           {messages.length === 0 && !isThinking && (
             <div className="welcome">
               <div className="welcome-glow"/>
-              <h1>Hello! 👋</h1>
-              <p>I'm your AI vision assistant. I can see through your camera and answer questions about your environment in real time.</p>
+              <h1>Safety Monitor</h1>
+              <p>I watch your workspace in real time. Ask me about PPE compliance, worker safety, or what I see on camera.</p>
               <div className="welcome-chips">
                 {SUGGESTIONS.map((s) => (
                   <button key={s} className="welcome-chip" onClick={() => send(s)}>{s}</button>
@@ -370,7 +360,7 @@ export default function App() {
             ref={inputRef}
             className="chat-input"
             rows={1}
-            placeholder={connected ? "Type a message…  (Enter to send)" : "Connecting…"}
+            placeholder={connected ? "Ask about safety…  (Enter to send)" : "Connecting…"}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(draft); }}}
@@ -382,6 +372,146 @@ export default function App() {
             onClick={() => send(draft)}
             disabled={!connected || isThinking || !draft.trim()}
           >↑</button>
+        </div>
+      </div>
+
+      {/* ── RIGHT PANEL: Safety Monitoring ── */}
+      <div className="safety-panel">
+
+        {/* Alert banner */}
+        {modelReady && (
+          <div className={`alert-banner ${safetyAlerts.total > 0 ? "danger" : "safe"}`}>
+            {safetyAlerts.total > 0 ? (
+              <>
+                <span className="alert-icon">🚨</span>
+                <span className="alert-text">
+                  <strong>{safetyAlerts.total} violation{safetyAlerts.total > 1 ? "s" : ""} detected — </strong>
+                  {safetyAlerts.alerts.map(a =>
+                    `${a.worker}: ${a.violations.join(", ")}`
+                  ).join(" · ")}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="alert-icon">✅</span>
+                <span className="alert-text"><strong>All workers compliant</strong> — no PPE violations</span>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* TOP: Live annotated camera feed */}
+        <div className="ppe-feed-section">
+          <div className="section-header">
+            <span>Live Camera Feed</span>
+            <div className="cam-live-badge live">
+              <span className="live-dot"/> LIVE
+            </div>
+          </div>
+          <div className="ppe-feed-wrap">
+            <img
+              src={`${API_BASE}/api/video-stream`}
+              className="ppe-feed-img"
+              alt="Live PPE feed"
+              style={{ width: "100%", height: "auto", display: "block" }}
+            />
+            {!ppeStatus?.model_ready && (
+              <div style={{
+                position: "absolute", bottom: "8px", right: "8px",
+                background: "rgba(0,0,0,0.7)", color: "white",
+                padding: "4px 8px", borderRadius: "4px", fontSize: "12px",
+                pointerEvents: "none",
+              }}>
+                PPE model loading…
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* BOTTOM: Compliance Dashboard */}
+        <div className="compliance-section">
+          <div className="section-header">
+            <span>PPE Compliance Dashboard</span>
+            {sceneInfo && (
+              <span className="scene-pill">
+                👥 {sceneInfo.people} {sceneInfo.people === 1 ? "person" : "people"}
+                {sceneInfo.motion ? " · ⚡ motion" : ""}
+              </span>
+            )}
+          </div>
+
+          <div className="compliance-body">
+            {/* Large compliance score */}
+            <div className="score-block">
+              <div className="score-ring" style={{ "--score-color": complianceColor(overallPct) }}>
+                <span className="score-number" style={{ color: complianceColor(overallPct) }}>
+                  {overallPct}%
+                </span>
+                <span className="score-label">Overall</span>
+              </div>
+            </div>
+
+            {/* Metric rows */}
+            <div className="metrics-block">
+              <div className="metric-row">
+                <span className="metric-icon">⛑️</span>
+                <span className="metric-name">Helmet</span>
+                <div className="metric-bar-wrap">
+                  <div className="metric-bar" style={{
+                    width: `${helmetPct}%`,
+                    background: complianceColor(helmetPct)
+                  }}/>
+                </div>
+                <span className="metric-pct" style={{ color: complianceColor(helmetPct) }}>
+                  {helmetPct}%
+                </span>
+              </div>
+
+              <div className="metric-row">
+                <span className="metric-icon">👷</span>
+                <span className="metric-name">Workers</span>
+                <div className="metric-bar-wrap">
+                  <div className="metric-count">{totalWorkers} detected</div>
+                </div>
+                <span className="metric-pct" style={{ color: "var(--muted2)" }}>
+                  {ppeStatus?.compliant ?? 0}/{totalWorkers}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Per-worker list */}
+          <div className="worker-list">
+            {workers.length === 0 ? (
+              <div className="worker-empty">
+                {modelReady
+                  ? "No workers detected in frame"
+                  : "PPE model initializing — visual detection starting soon"}
+              </div>
+            ) : (
+              workers.map((w) => (
+                <div key={w.id} className={`worker-item ${w.status}`}>
+                  <span className="worker-icon">{workerIcon(w.status)}</span>
+                  <span className="worker-label">{w.label}</span>
+                  <span className="worker-status">
+                    {w.violations.length === 0
+                      ? "Compliant"
+                      : w.violations.join(" · ")}
+                  </span>
+                  <div className="worker-badges">
+                    <span className={`ppe-badge ${w.has_helmet ? "ok" : "missing"}`}>
+                      ⛑️ {w.has_helmet ? "Helmet" : "No Helmet"}
+                    </span>
+                    {w.violation_duration && (
+                      <span style={{ color: "#FF4444", fontSize: "11px", marginLeft: "8px" }}>
+                        ⏱ {w.violation_duration}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>

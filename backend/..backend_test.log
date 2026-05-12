@@ -1,0 +1,12 @@
+INFO:     Started server process [30404]
+INFO:     Waiting for application startup.
+2026-05-10 19:09:20,313 [INFO] services.camera_stream: CameraStream started on index 0
+2026-05-10 19:09:20,314 [INFO] main: Server-side camera started.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-05-10 19:09:24,498 [INFO] services.perception_loop: Perception loop started.
+2026-05-10 19:09:25,096 [INFO] services.ppe_detector: PPE helmet model loaded: {0: 'Hardhat', 1: 'NO-Hardhat'}
+INFO:     127.0.0.1:54254 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57317 - "GET /api/ppe-status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63556 - "GET /api/ppe-feed HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55507 - "GET /api/safety-alerts HTTP/1.1" 200 OK
