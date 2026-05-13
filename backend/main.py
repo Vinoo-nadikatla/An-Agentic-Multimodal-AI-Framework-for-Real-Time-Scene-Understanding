@@ -1,14 +1,14 @@
 from __future__ import annotations
 import asyncio, base64, logging, os, tempfile, uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 import cv2, uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from fastapi import Request
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -29,21 +29,19 @@ def _try_start_server_camera():
     except Exception as e:
         logger.info("Server-side camera not available (%s)", e)
 
-app = FastAPI(title="Vision Assistant API", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     _try_start_server_camera()
-
-@app.on_event("shutdown")
-async def shutdown():
+    yield
     if _server_camera_active:
         try:
             from services.camera_stream import camera_stream
             camera_stream.stop()
         except Exception:
             pass
+
+app = FastAPI(title="Vision Assistant API", version="2.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/health")
 async def health():

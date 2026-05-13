@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 _SCENE_RE = re.compile(
     r"how.many|count.*people|number.of.people|kitne.log|entha.mandi|"
     r"is.there.*anyone|are.there.*people|anyone.in.the.room|"
-    r"motion|movement|moving|suspicious|halchal|"
+    r"motion|movement|moving|halchal|"
     r"ఎంత.మంది|ఎవరైనా|కదలిక",
     re.IGNORECASE,
 )
@@ -36,10 +36,17 @@ _VISION_RE = re.compile(
     r"my.appearance|my.outfit|my.expression|"
     r"color.of|colour.of|holding|doing|"
     r"see.right.now|look.right.now|"
+    r"suspicious|behaviour|behavior|"
+    r"what.*see|do.you.see|can.you.see|"
+    r"activity|what.*happen|going.on|"
     r"చూడు|వివరించు|ఏమి.కనిపిస్తోంది|నా.వెనక|"
     r"kya.dikh|batao|rang|dekho",
     re.IGNORECASE,
 )
+
+# Queries containing "suspicious" always need the camera, even if they also
+# match scene terms like "movement" or "motion".
+_SUSPICIOUS_RE = re.compile(r"\bsuspicious\b", re.IGNORECASE)
 
 
 def classify(query: str) -> str:
@@ -49,6 +56,11 @@ def classify(query: str) -> str:
     Falls back to general for anything unknown.
     """
     q = query.strip()
+
+    # suspicious beats all other matches — always needs a live camera look
+    if _SUSPICIOUS_RE.search(q):
+        logger.info("Intent: vision_describe (suspicious) for: %.50s", q)
+        return "vision_describe"
 
     if _SCENE_RE.search(q):
         logger.info("Intent: scene for: %.50s", q)

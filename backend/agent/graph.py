@@ -58,15 +58,21 @@ def tool_router(state: AgentState) -> Literal["tool_executor", "__end__"]:
 
 def build_graph():
     tools = get_tools()
-    llm = ChatGroq(
+    _base_llm = ChatGroq(
         model="llama-3.3-70b-versatile",
         api_key=os.environ["GROQ_API_KEY"],
         streaming=True,
         temperature=0,
-    ).bind_tools(tools)
+    )
+    plain_llm = _base_llm                  # no tools — for general / scene
+    llm_with_tools = _base_llm.bind_tools(tools)  # vision tool available
+
+    _TOOL_INTENTS = {"vision_describe", "vision_ocr"}
 
     def safe_conversation(s):
         try:
+            intent = s.get("intent", "general")
+            llm = llm_with_tools if intent in _TOOL_INTENTS else plain_llm
             return conversation_node(s, llm)
         except Exception as e:
             logger.error("conversation_node failed: %s", e)

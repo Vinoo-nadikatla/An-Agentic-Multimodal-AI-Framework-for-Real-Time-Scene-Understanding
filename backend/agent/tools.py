@@ -64,26 +64,10 @@ def _get_frame_b64(size: int = 320) -> str:
 
 @tool
 def analyze_image_with_query(query: str) -> str:
-    """
-    Captures a live frame from the camera and analyzes it using AI vision.
-
-    Call this tool when the user wants to know anything about:
-    - What is physically present in their environment
-    - Their own appearance or what they are wearing
-    - Objects, colors, text, or people visible through the camera
-    - What the room or background looks like
-    - Motion, activity, or anything happening around them
-
-    Do not call this tool for:
-    - General knowledge questions
-    - Math, history, science, definitions
-    - Questions about the past or hypothetical situations
-    - Follow-up questions about something already described this conversation
-
-    This tool makes one API call per invocation. Call it only once per query.
+    """Capture a live camera frame and answer a visual question about it.
 
     Args:
-        query: The specific visual question to answer.
+        query: The visual question to answer.
     Returns:
         Natural language answer based on what the camera currently sees.
     """
@@ -123,10 +107,7 @@ def analyze_image_with_query(query: str) -> str:
 
 @tool
 def read_text_from_camera(query: str) -> str:
-    """
-    Use this tool to READ text, numbers, or symbols visible in the camera.
-    Use for: clocks, signs, labels, boards, documents, prices, phone numbers.
-    Do NOT use for general scene description.
+    """Read text, numbers, or symbols visible in the camera view using OCR.
 
     Args:
         query: What text the user wants to read.
