@@ -36,7 +36,16 @@ Always be specific and actionable in your safety assessments.
 Respond in the same language the user speaks.
 You may answer simple factual questions like current date, time, or weather briefly, then redirect to safety monitoring. Never refuse to respond — always give some answer.
 
-CRITICAL: After the camera tool returns results, immediately give your safety assessment as plain text. Never call any tool a second time."""
+CRITICAL : 
+- After the camera tool returns results, immediately give your safety assessment as plain text. Never call any tool a second time.
+- Any person you see in the camera IS A WORKER in the monitored area
+- NEVER say "this appears to be a domestic setting" or "no workers present"
+- NEVER say the person does not need PPE because of the environment
+- If you see a person without a helmet, that IS a safety violation
+- You monitor for PPE compliance — helmets are required for all workers
+- The monitored area may look like any room — treat all persons as workers
+- Always respond as an industrial safety AI, not a general assistant
+"""
 
 def conversation_node(state: dict, llm) -> dict:
     from datetime import datetime as _dt
@@ -109,6 +118,7 @@ def conversation_node(state: dict, llm) -> dict:
 
     # Scene queries — inject real data and answer without tools
     elif intent == "scene":
+        scene_context = ""
         try:
             from services.scene_memory import get_scene
             from services.activity_log import get_summary
@@ -143,24 +153,30 @@ def conversation_node(state: dict, llm) -> dict:
                     f"- Motion: {'Yes' if scene.get('motion') else 'No'}\n\n"
                     f"Per-worker status:\n{worker_lines}\n"
                 )
+        except Exception as e:
+            logger.warning("Scene data unavailable: %s", e)
 
-            scene_system = SystemMessage(content=(
-                dynamic_system
-                + "\n\nCRITICAL: Answer ONLY using the data provided below. "
-                "Do NOT call any tool or function. Do NOT use the camera. "
-                "Do NOT guess, assume, or add details not in the data. "
-                "If data says 0 workers, say 0 workers. "
-                "Do not mention gloves, goggles, or any PPE not tracked by the system.\n\n"
-                + scene_context
-            ))
-            full_messages = [scene_system] + messages
-        except Exception:
-            full_messages = [SystemMessage(content=dynamic_system)] + messages
+        if not scene_context or not scene_context.strip():
+            return {"messages": [AIMessage(content="System is initializing, please wait a moment and try again.")]}
+
+        scene_system = SystemMessage(content=(
+            dynamic_system
+            + "\n\nCRITICAL: Answer ONLY using the data provided below. "
+            "Do NOT call any tool or function. Do NOT use the camera. "
+            "Do NOT guess, assume, or add details not in the data. "
+            "If data says 0 workers, say 0 workers. "
+            "Do not mention gloves, goggles, or any PPE not tracked by the system.\n\n"
+            + scene_context
+        ))
+        full_messages = [scene_system] + messages
     else:
         full_messages = [SystemMessage(content=dynamic_system)] + messages
 
     try:
         ai_msg = llm.invoke(full_messages)
+        if intent == "scene":
+            logger.info("Scene response content length: %d, preview: %.80s",
+                        len(ai_msg.content or ""), ai_msg.content or "")
         if isinstance(ai_msg.content, str):
             # Remove leaked tool-call XML syntax
             ai_msg.content = re.sub(r'<function=\w+>.*?</function>', '', ai_msg.content, flags=re.DOTALL)

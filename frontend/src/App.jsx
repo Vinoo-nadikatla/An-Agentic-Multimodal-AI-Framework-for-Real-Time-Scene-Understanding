@@ -78,10 +78,11 @@ export default function App() {
   const [ppeStatus, setPpeStatus]   = useState(null);
   const [safetyAlerts, setSafetyAlerts] = useState({ alerts: [], total: 0 });
 
-  const bottomRef   = useRef(null);
-  const inputRef    = useRef(null);
-  const recorderRef = useRef(null);
-  const chunksRef   = useRef([]);
+  const bottomRef        = useRef(null);
+  const inputRef         = useRef(null);
+  const recorderRef      = useRef(null);
+  const chunksRef        = useRef([]);
+  const recordingStartRef = useRef(null);
 
   const API_BASE = import.meta.env.VITE_API_URL || "";
   const WS_BASE  = API_BASE.replace(/^http/, "ws") || `ws://${window.location.host}`;
@@ -236,6 +237,11 @@ export default function App() {
         setProcessing(true);
         try {
           const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+          if (blob.size < 1000) {
+            console.warn("Audio too short or empty, skipping transcription");
+            setMessages((m) => [...m, { role: "assistant", text: "No audio detected, please try again.", time: now() }]);
+            return;
+          }
           const form = new FormData();
           form.append("file", blob, "voice.webm");
           const resp = await fetch(`${API_BASE}/api/transcribe`, { method: "POST", body: form });
@@ -243,11 +249,21 @@ export default function App() {
         } finally { setProcessing(false); }
       };
       recorder.start();
+      recordingStartRef.current = Date.now();
       setRecording(true);
     } catch (e) { console.error(e); }
   };
 
-  const stopRec = () => { if (!recording) return; recorderRef.current?.stop(); setRecording(false); };
+  const stopRec = async () => {
+    if (!recording) return;
+    const MIN_RECORD_MS = 500;
+    const elapsed = Date.now() - (recordingStartRef.current ?? Date.now());
+    if (elapsed < MIN_RECORD_MS) {
+      await new Promise((resolve) => setTimeout(resolve, MIN_RECORD_MS - elapsed));
+    }
+    recorderRef.current?.stop();
+    setRecording(false);
+  };
 
   const overallPct   = ppeStatus?.overall_compliance ?? 0;
   const helmetPct    = ppeStatus?.helmet_compliance  ?? 0;
