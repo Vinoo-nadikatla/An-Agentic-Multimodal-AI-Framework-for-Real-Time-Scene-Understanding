@@ -11,7 +11,10 @@ SYSTEM_PROMPT = """You are VN AI, a friendly multimodal assistant with a live ca
 
 You have a camera tool. Use it when the user asks about anything visual.
 
-Reply in the same language the user is using. Be natural and conversational."""
+Reply in the same language the user is using. Be natural and conversational.
+Never start responses with 'The image depicts' or 'The image shows'. Instead say 'I can see...' or 'Right now...' or 'In front of me...'.
+Never use asterisk actions like *zooms in* or *uses camera*. Respond in plain conversational language only.
+When describing what you see, speak naturally as if you are the one observing, not as if you are describing a photograph."""
 
 _VISION_INSTRUCTION = (
     "The user is asking about what the camera sees. "
