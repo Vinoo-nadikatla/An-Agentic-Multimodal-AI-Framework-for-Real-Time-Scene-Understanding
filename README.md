@@ -293,16 +293,6 @@ All domains reuse the same base architecture. Only the system prompt, intent pat
 
 ---
 
-## Known Limitations
-
-- Telugu and Hindi voice input via Whisper has limited accuracy — text input recommended for Indic languages
-- Single camera only — multi-camera support is planned as future work
-- Helmet detection only — full multi-class PPE detection (vest, gloves, footwear) is future work
-- Requires internet connectivity for Groq API inference
-- All state is maintained in-memory — no persistent storage across sessions
-- No authentication or access control on API endpoints
-
----
 
 ## Future Work
 
@@ -323,19 +313,9 @@ If you use this work, please cite:
 ```
 Nadikatla, V. (2026). An Agentic Multimodal AI Framework for Real-Time Scene 
 Understanding Across Assistive and Industrial Safety Domains.
-MTech Dissertation, Department of Computer Science and Engineering,
+MTech Dissertation, Department of ECE - Applied Artificial Intelligence,
 Visvesvaraya National Institute of Technology, Nagpur.
 ```
-
----
-
-## Acknowledgements
-
-- **Guide:** Dr. Shital Raut, Assistant Professor, Department of CSE, VNIT Nagpur
-- **LLM and STT Models:** Meta AI (Llama-3.3-70b, Llama-4-Scout-17b), OpenAI (Whisper)
-- **Inference Platform:** Groq Cloud (LPU inference)
-- **Object Detection:** Ultralytics YOLOv8, keremberke/yolov8n-hard-hat-detection (HuggingFace)
-- **Institution:** Visvesvaraya National Institute of Technology, Nagpur
 
 ---
 
