@@ -1,8 +1,6 @@
 # An Agentic Multimodal AI Framework for Real-Time Scene Understanding Across Assistive and Industrial Safety Domains
 
 > **MTech Project** — Visvesvaraya National Institute of Technology (VNIT) Nagpur
-> **Student:** Vinoothna Nadikatla | **Guide:** Dr. Shital Raut
-> **Department:** ECE-APPLIED ARTIFICIAL INTELLIGENCE | 2025–2026
 
 ---
 
